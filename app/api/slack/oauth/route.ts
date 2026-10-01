@@ -16,6 +16,7 @@ export async function GET() {
     "mpim:history",
     "mpim:read",
     "search:read",
+    "users:read",
   ].join(",");
 
   const slackUrl = new URL("https://slack.com/oauth/v2/authorize");

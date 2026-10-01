@@ -1,9 +1,8 @@
 import { Redis } from "@upstash/redis";
 
-export const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-});
+// Reads UPSTASH_REDIS_REST_URL/TOKEN, falling back to KV_REST_API_URL/TOKEN
+// (the names injected by the Vercel Marketplace Upstash integration).
+export const redis = Redis.fromEnv();
 
 export interface FollowUp {
   userId: string;              // Slack user ID who asked the question
