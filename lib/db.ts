@@ -7,10 +7,14 @@ export interface NudgeUser {
   userToken: string;
   installedAt: number;
   // Schedule preferences
-  reminderHours?: number[];      // Specific hours in UTC (e.g., [16, 0] for 8am/4pm PT)
+  reminderHours?: number[];      // Specific hours in UTC (e.g., [23] for 8am KST)
   reminderInterval?: number;     // Interval in hours (e.g., 1 = hourly, 2 = every 2 hours)
   timezone?: string;
 }
+
+// 8am KST = 23 UTC. Must match the send-reminders cron hour in vercel.json
+// (Vercel Hobby only allows one cron run per day).
+export const DEFAULT_REMINDER_HOURS = [23];
 
 const USERS_KEY = "nudge:users";
 const USER_PREFIX = "nudge:user:";

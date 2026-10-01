@@ -12,7 +12,7 @@
     "slash_commands": [
       {
         "command": "/nudge",
-        "url": "https://nudge.labs.vercel.dev/api/slack/commands",
+        "url": "https://clio-nudge.vercel.app/api/slack/commands",
         "description": "Configure your reminder schedule",
         "usage_hint": "[9am] [5pm] or [off]",
         "should_escape": false
@@ -21,7 +21,7 @@
   },
   "oauth_config": {
     "redirect_urls": [
-      "https://nudge.labs.vercel.dev/api/slack/oauth/callback"
+      "https://clio-nudge.vercel.app/api/slack/oauth/callback"
     ],
     "scopes": {
       "user": [
@@ -46,7 +46,7 @@
   "settings": {
     "interactivity": {
       "is_enabled": true,
-      "request_url": "https://nudge.labs.vercel.dev/api/slack/interactions"
+      "request_url": "https://clio-nudge.vercel.app/api/slack/interactions"
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,

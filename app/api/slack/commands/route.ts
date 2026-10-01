@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { verifySlackRequest, getThreadLink, getTeamUrl, escapeSlackText, getConversationLabel, createSlackClient } from "@/lib/slack";
-import { getUser, updateUser } from "@/lib/db";
+import { getUser, updateUser, DEFAULT_REMINDER_HOURS } from "@/lib/db";
 import { getUserFollowUps, updateFollowUp } from "@/lib/redis";
 import { summarizeQuestion } from "@/lib/ai";
+
+// Hours ahead of UTC (simplified - no DST)
+const TZ_OFFSETS: Record<string, number> = { PT: -8, KST: 9 };
+const DEFAULT_TIMEZONE = "KST";
+
+function utcOffset(timezone: string): number {
+  return TZ_OFFSETS[timezone] ?? 0;
+}
 
 // Parse time like "9am", "2pm", "14:00" to UTC hour
 function parseTimeToUTC(timeStr: string, timezone: string): number | null {
@@ -17,25 +25,21 @@ function parseTimeToUTC(timeStr: string, timezone: string): number | null {
     if (hour === 12) hour = isPM ? 12 : 0;
     else if (isPM) hour += 12;
 
-    // Convert to UTC (simplified - assumes PT = UTC-8)
-    const tzOffset = timezone === "PT" ? 8 : 0;
-    return (hour + tzOffset) % 24;
+    return (hour - utcOffset(timezone) + 24) % 24;
   }
 
   // Parse 24-hour format (14:00, 9:00)
   const match24 = lower.match(/^(\d{1,2}):?(\d{2})?$/);
   if (match24) {
     const hour = parseInt(match24[1]);
-    const tzOffset = timezone === "PT" ? 8 : 0;
-    return (hour + tzOffset) % 24;
+    return (hour - utcOffset(timezone) + 24) % 24;
   }
 
   return null;
 }
 
 function formatUTCHourToLocal(utcHour: number, timezone: string): string {
-  const tzOffset = timezone === "PT" ? -8 : 0;
-  let localHour = (utcHour + tzOffset + 24) % 24;
+  let localHour = (utcHour + utcOffset(timezone) + 24) % 24;
   const isPM = localHour >= 12;
   if (localHour === 0) localHour = 12;
   else if (localHour > 12) localHour -= 12;
@@ -43,7 +47,7 @@ function formatUTCHourToLocal(utcHour: number, timezone: string): string {
 }
 
 function formatSchedule(user: { reminderHours?: number[]; reminderInterval?: number; timezone?: string }): string {
-  const timezone = user.timezone || "PT";
+  const timezone = user.timezone || DEFAULT_TIMEZONE;
 
   if (user.reminderInterval) {
     if (user.reminderInterval === 1) {
@@ -52,7 +56,7 @@ function formatSchedule(user: { reminderHours?: number[]; reminderInterval?: num
     return `every ${user.reminderInterval} hours`;
   }
 
-  const hours = user.reminderHours || [16, 0];
+  const hours = user.reminderHours || DEFAULT_REMINDER_HOURS;
   if (hours.length === 0) {
     return "disabled";
   }
@@ -69,14 +73,14 @@ async function handleNudgeCommand(responseUrl: string, userId: string, text: str
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         response_type: "ephemeral",
-        text: "You haven't installed Nudge yet. Visit https://nudge.labs.vercel.dev to get started.",
+        text: `You haven't installed Nudge yet. Visit ${process.env.NEXT_PUBLIC_APP_URL} to get started.`,
       }),
     });
     return;
   }
 
   const args = text.trim().toLowerCase();
-  const timezone = user.timezone || "PT";
+  const timezone = user.timezone || DEFAULT_TIMEZONE;
 
   // Show current settings
   if (!args || args === "settings" || args === "status") {

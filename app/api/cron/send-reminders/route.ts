@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSlackClient, getThreadLink, getTeamUrl, escapeSlackText, getConversationLabel } from "@/lib/slack";
 import { getUserFollowUps, updateFollowUp } from "@/lib/redis";
-import { getAllUsers } from "@/lib/db";
+import { getAllUsers, DEFAULT_REMINDER_HOURS } from "@/lib/db";
 import { summarizeQuestion } from "@/lib/ai";
 
 export async function GET(req: NextRequest) {
@@ -24,13 +24,13 @@ export async function GET(req: NextRequest) {
   for (const user of users) {
     // Check if current hour matches user's schedule
     let shouldSend = false;
-    const reminderHours = user.reminderHours ?? [16]; // 8am PT only
+    const reminderHours = user.reminderHours ?? DEFAULT_REMINDER_HOURS; // 8am KST only
 
     if (user.reminderInterval) {
       // Interval-based: send if current hour is divisible by interval
       shouldSend = currentHourUTC % user.reminderInterval === 0;
     } else {
-      // Specific hours or default (8am PT = 16 UTC, 4pm PT = 0 UTC)
+      // Specific hours or default (8am KST = 23 UTC)
       shouldSend = reminderHours.length > 0 && reminderHours.includes(currentHourUTC);
     }
 

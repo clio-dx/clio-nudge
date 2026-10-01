@@ -56,7 +56,7 @@ export default function Home({
           <div className="mt-8 text-sm text-zinc-500 dark:text-zinc-500">
             <p>
               <a
-                href="https://github.com/vercel-labs/nudge"
+                href="https://github.com/clio-dx/clio-nudge"
                 className="underline hover:text-zinc-700 dark:hover:text-zinc-300"
               >
                 View on GitHub

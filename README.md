@@ -6,14 +6,14 @@ a personal slack agent that reminds you to follow up on unanswered questions.
 
 1. **polls** your slack messages hourly for questions you've asked (messages with `?`)
 2. **tracks** questions that don't have substantive answers yet
-3. **reminds** you via DM at 8am PT with a digest of pending follow-ups
+3. **reminds** you via DM at 8am KST with a digest of pending follow-ups
 4. **uses AI** to distinguish real answers from non-committal responses ("looking into it", "will check", etc.)
 
 ## add to slack
 
 click the button below to add Nudge to your Slack workspace:
 
-[![Add to Slack](https://platform.slack-edge.com/img/add_to_slack.png)](https://nudge.labs.vercel.dev/api/slack/oauth)
+[![Add to Slack](https://platform.slack-edge.com/img/add_to_slack.png)](https://clio-nudge.vercel.app/api/slack/oauth)
 
 that's it! your questions will be tracked automatically.
 
