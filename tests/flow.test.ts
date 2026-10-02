@@ -4,7 +4,8 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { resetSlack, workspace, type FakeMessage } from "./mocks/slack-web-api.ts";
 import { resetRedis } from "./mocks/redis.ts";
-import { aiCalls } from "./mocks/ai.ts";
+import { aiCalls, aiFailures } from "./mocks/ai.ts";
+import { resumeAi } from "../lib/ai.ts";
 import { pollUser } from "../lib/poll.ts";
 import { runTick } from "../lib/tick.ts";
 import { getUser, saveUser, updateUser, type NudgeUser } from "../lib/db.ts";
@@ -106,6 +107,8 @@ beforeEach(() => {
   resetSlack();
   resetRedis();
   aiCalls.length = 0;
+  aiFailures.rateLimited = 0;
+  resumeAi();
   T = {};
   buildWorkspace();
 });
@@ -274,6 +277,24 @@ test("a search hit whose message is gone doesn't stall later polls", async () =>
   const stats = await pollUser(user);
   assert.deepEqual(stats.errors, []);
   assert.ok(!stats.incomplete.some((r) => r.startsWith("with:") || r.startsWith("mentions:")), JSON.stringify(stats.incomplete));
+});
+
+test("an AI rate limit postpones work instead of failing it, and nothing is lost", async () => {
+  const user = await install();
+  aiFailures.rateLimited = 1; // the first model call hits the provider limit
+  const first = await pollUser(user);
+  assert.deepEqual(first.errors, [], "rate limits are not reported as errors");
+  assert.ok(first.incomplete.some((r) => r.startsWith("AI rate limit")), JSON.stringify(first.incomplete));
+  const callsWhilePaused = aiCalls.length;
+  assert.ok(callsWhilePaused <= 1, "no more model calls while paused");
+
+  // Pause over → the next poll picks everything up
+  resumeAi();
+  await pollUser((await getUser(ME))!);
+  const incoming = ids(await getUserFollowUps(ME, "incoming"));
+  assert.ok(incoming.includes(`DA:${T.unanswered}`));
+  assert.ok(incoming.includes(`DB:${T.deferredByMe}`));
+  assert.equal((await getUserFollowUps(ME, "outgoing")).length, 2);
 });
 
 test("notes in my self-DM are never tracked", async () => {

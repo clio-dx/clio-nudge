@@ -14,7 +14,7 @@ import {
   type FollowUp,
   type FollowUpKind,
 } from "@/lib/redis";
-import { classifyResponse, classifyUserMessage, summarizeQuestion } from "@/lib/ai";
+import { AiUnavailableError, aiAvailable, classifyResponse, classifyUserMessage, summarizeQuestion } from "@/lib/ai";
 import { updateUser, type NudgeUser } from "@/lib/db";
 import { DONE_REACTIONS, isCcMention, isLikelyQuestion, mentionsUser, otherMentions } from "@/lib/question";
 import { localParts, resolveTimezone } from "@/lib/schedule";
@@ -502,11 +502,16 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
 
   // Least recently checked first, so a deadline cut-off rotates fairly between polls
   tracked.sort((a, b) => (a.lastActivityAt ?? 0) - (b.lastActivityAt ?? 0));
+  let postponed = 0;
   const started = await mapLimit(
     tracked,
     CONCURRENCY,
     async (f) => {
       const id = itemId(kind, f.channel, f.threadTs);
+      if (!aiAvailable()) {
+        postponed++; // AI is rate-limited: leave it as is, re-check next poll
+        return;
+      }
       try {
         if (ctx.excluded.has(f.channel)) {
           await drop(f);
@@ -536,6 +541,8 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
           // Deleted message, left channel, ... — nothing to remind about anymore
           await drop(f).catch(() => {});
           st.resolved++;
+        } else if (err instanceof AiUnavailableError) {
+          postponed++;
         } else {
           ctx.stats.errors.push(`recheck ${id}: ${err}`);
         }
@@ -543,7 +550,8 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
     },
     ctx.deadline
   );
-  if (started < tracked.length) ctx.stats.incomplete.push(`${kind} recheck: ${tracked.length - started} left`);
+  const left = tracked.length - started + postponed;
+  if (left > 0) ctx.stats.incomplete.push(`${kind} recheck: ${left} left`);
 
   return new Set(tracked.map((f) => itemId(kind, f.channel, f.threadTs)));
 }
@@ -577,15 +585,26 @@ async function processCandidates(
   handle: (c: Candidate) => Promise<void>
 ): Promise<number> {
   const batch = candidates.slice(0, MAX_NEW_PER_KIND);
-  const failed = new Set<Candidate>();
+  const failed = new Set<Candidate>(); // retried next poll (the search cursor stays at their page)
+  let postponed = 0;
   const started = await mapLimit(
     batch,
     CONCURRENCY,
     async (c) => {
+      if (!aiAvailable()) {
+        failed.add(c);
+        postponed++;
+        return;
+      }
       try {
         await handle(c);
       } catch (err) {
         const code = slackErrorCode(err);
+        if (err instanceof AiUnavailableError) {
+          failed.add(c);
+          postponed++;
+          return;
+        }
         if (code && GONE_ERRORS.has(code)) {
           // Deleted message / left channel: nothing to track, and don't hold the cursor back
           const kind = runs.some((r) => r.key === "outgoing") ? "outgoing" : "incoming";
@@ -603,13 +622,17 @@ async function processCandidates(
     const pages = open.map((c) => c.pages[run.key]).filter((p): p is number => p !== undefined);
     saveCursor(ctx, run, pages.length > 0 ? Math.min(...pages) : undefined);
   }
-  return candidates.length - started;
+  if (postponed > 0) ctx.stats.incomplete.push(`AI rate limit: ${postponed} postponed`);
+  return candidates.length - started + postponed;
 }
 
 async function pollOutgoing(ctx: Ctx): Promise<void> {
   const st = ctx.stats.outgoing;
   const trackedIds = await recheckTracked(ctx, "outgoing");
-  if (Date.now() > ctx.deadline) return;
+  if (Date.now() > ctx.deadline) {
+    ctx.stats.incomplete.push("outgoing search: out of time");
+    return;
+  }
 
   const run = await runSearch(ctx, "outgoing", `from:<@${ctx.me}>`);
   st.searched = run.items.length;
@@ -656,7 +679,10 @@ async function pollOutgoing(ctx: Ctx): Promise<void> {
 async function pollIncoming(ctx: Ctx): Promise<void> {
   const st = ctx.stats.incoming;
   const trackedIds = await recheckTracked(ctx, "incoming");
-  if (Date.now() > ctx.deadline) return;
+  if (Date.now() > ctx.deadline) {
+    ctx.stats.incomplete.push("incoming search: out of time");
+    return;
+  }
 
   // Mentions catch channels / group DMs / threads; `with:` catches 1:1 DMs and threads I'm in.
   const runs = [
@@ -747,6 +773,7 @@ async function fillSummaries(ctx: Ctx): Promise<void> {
     all,
     CONCURRENCY,
     async (f) => {
+      if (!aiAvailable()) return; // summaries can wait; the list falls back to the message text
       try {
         const [topic, label] = await Promise.all([
           summarizeQuestion(f.originalMessage),
@@ -794,22 +821,23 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
       deadline,
     };
 
-    // Save search progress after each part, so a run cut short still moves forward
+    // Save search progress after each part, so a run cut short still moves forward.
+    // Questions to me come first: they're the ones that need my action.
     const saveProgress = () => updateUser(user.slackUserId, { searchCursors: ctx.cursors });
-    if (user.trackOutgoing !== false) {
-      try {
-        await pollOutgoing(ctx);
-        await saveProgress();
-      } catch (err) {
-        stats.errors.push(`outgoing: ${err}`);
-      }
-    }
     if (user.trackIncoming !== false) {
       try {
         await pollIncoming(ctx);
         await saveProgress();
       } catch (err) {
         stats.errors.push(`incoming: ${err}`);
+      }
+    }
+    if (user.trackOutgoing !== false) {
+      try {
+        await pollOutgoing(ctx);
+        await saveProgress();
+      } catch (err) {
+        stats.errors.push(`outgoing: ${err}`);
       }
     }
     await fillSummaries(ctx);

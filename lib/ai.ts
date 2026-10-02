@@ -5,12 +5,43 @@ import { gateway } from "@ai-sdk/gateway";
 const MODEL = process.env.AI_MODEL || "anthropic/claude-haiku-4.5";
 // Bounded so a slow model call can't push a cron run past its time limit
 const AI_TIMEOUT_MS = 20_000;
+// After a rate-limit error, stop calling the model for a while instead of failing every call
+const RATE_LIMIT_PAUSE_MS = 60_000;
+
+let pausedUntil = 0;
+
+export class AiUnavailableError extends Error {}
+
+export function aiAvailable(): boolean {
+  return Date.now() >= pausedUntil;
+}
+
+// Clears a rate-limit pause (tests; also safe to call after changing AI_MODEL)
+export function resumeAi(): void {
+  pausedUntil = 0;
+}
+
+async function generate(prompt: string): Promise<string> {
+  if (!aiAvailable()) throw new AiUnavailableError("AI rate limit — paused");
+  try {
+    const { text } = await generateText({
+      model: gateway.languageModel(MODEL),
+      timeout: AI_TIMEOUT_MS,
+      maxRetries: 1,
+      prompt,
+    });
+    return text;
+  } catch (err) {
+    if (/rate.?limit|429|quota/i.test(String(err))) {
+      pausedUntil = Date.now() + RATE_LIMIT_PAUSE_MS;
+      throw new AiUnavailableError(String(err).slice(0, 200));
+    }
+    throw err;
+  }
+}
 
 export async function summarizeQuestion(originalMessage: string): Promise<string> {
-  const { text } = await generateText({
-    model: gateway.languageModel(MODEL),
-    timeout: AI_TIMEOUT_MS,
-    prompt: `Extract the topic of this Slack message in 2-4 words. Output ONLY the topic, nothing else.
+  const text = await generate(`Extract the topic of this Slack message in 2-4 words. Output ONLY the topic, nothing else.
 Write the topic in the same language as the message (Korean message → Korean topic).
 
 Examples:
@@ -25,8 +56,7 @@ Examples:
 
 If the message is vague or you can't determine a specific topic, use a generic label like "follow-up" / "확인 요청". NEVER explain your reasoning. Output ONLY the topic.
 
-Message: "${originalMessage}"`,
-  });
+Message: "${originalMessage}"`);
 
   const cleaned = text.trim().toLowerCase().replace(/[.,"'!?]/g, "");
   // If the model returned something too long, it probably over-explained — use fallback
@@ -41,10 +71,7 @@ export async function classifyResponse(
   originalQuestion: string,
   response: string
 ): Promise<ResponseClassification> {
-  const { text } = await generateText({
-    model: gateway.languageModel(MODEL),
-    timeout: AI_TIMEOUT_MS,
-    prompt: `You are analyzing a Slack conversation. Someone asked a question and received a response.
+  const text = await generate(`You are analyzing a Slack conversation. Someone asked a question and received a response.
 Determine if the response is a substantive answer OR a non-committal acknowledgment.
 Messages may be in Korean or English.
 
@@ -65,8 +92,7 @@ Original question: "${originalQuestion}"
 
 Response received: "${response}"
 
-Reply with ONLY one word: "answer" or "non-committal"`,
-  });
+Reply with ONLY one word: "answer" or "non-committal"`);
 
   const cleaned = text.toLowerCase().trim();
   return cleaned.includes("non-committal") ? "non-committal" : "answer";
@@ -76,10 +102,7 @@ export async function classifyUserMessage(
   originalQuestion: string,
   newMessage: string
 ): Promise<UserMessageClassification> {
-  const { text } = await generateText({
-    model: gateway.languageModel(MODEL),
-    timeout: AI_TIMEOUT_MS,
-    prompt: `You are analyzing a Slack conversation. Someone asked a question earlier and is now sending another message in the same conversation.
+  const text = await generate(`You are analyzing a Slack conversation. Someone asked a question earlier and is now sending another message in the same conversation.
 Messages may be in Korean or English.
 Determine if their new message is:
 - A FOLLOW-UP: they're still waiting for an answer (e.g., "bump", "any update?", "following up", "hey X, checking in on this", "혹시 확인되셨을까요?", "리마인드 드려요", "이거 어떻게 됐나요")
@@ -91,8 +114,7 @@ Original question: "${originalQuestion}"
 
 New message: "${newMessage}"
 
-Reply with ONLY one word: "follow-up" or "self-resolved"`,
-  });
+Reply with ONLY one word: "follow-up" or "self-resolved"`);
 
   const cleaned = text.toLowerCase().trim();
   return cleaned.includes("self-resolved") ? "self-resolved" : "follow-up";
