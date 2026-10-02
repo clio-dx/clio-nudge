@@ -30,10 +30,12 @@ const SIGN_OFFS = [
   /(참고|양해|숙지|이해|유의|주의|감안)\s?(해\s?|하여\s?)?(부탁|주세요|주십시오|바랍니다)\S*/g,
   /(궁금|문의|질문|문제|이슈|요청)\S*\s?(사항|점|게|것)?\S*\s?(있으면|있으시면|생기면|생기시면|있을\s?경우)[^.!?]*?(연락|말씀|문의|물어|말)\S*\s?(해\s?)?주\S*/g,
   /(편하게|언제든지?|부담\s?없이)\s?(연락|말씀|문의|물어|말)\S*\s?(해\s?)?(주\S*|하세요|보세요)/g,
+  // Pointing to someone else: "채널이나 @박상구 님께 문의 부탁드립니다" — they'll ask them, not me
+  /\S*(님께|님에게|에게|한테|채널에|채널로|팀에|팀으로)\s?(직접\s?)?(문의|연락|말씀|요청|물어)\S*\s?(해\s?)?(주\S*|부탁\S*|바랍니다|하세요|해\s?보세요)/g,
 ];
 
-// "~할지 모르겠어요", "~할지 고민 중이에요" — thinking out loud, not asking
-const UNCERTAIN_STATEMENT = /\S지\s?(잘\s?)?(모르겠|고민)/;
+// "~할지 모르겠어요", "~할지가 고민이겠네요" — thinking out loud, not asking
+const UNCERTAIN_STATEMENT = /\S지가?\s?(잘\s?)?(모르겠|고민)/;
 
 // Requests that expect a response or action from the recipient
 const REQUEST_PATTERNS = [
@@ -51,7 +53,8 @@ const REQUEST_PATTERNS = [
 const WH_WORDS =
   /(^|\s)((뭐|뭘|무슨|무엇|언제|어디|누가|누구|어떻게|어떤|왜(?!냐))(?!든|나\s|나$|라도|이든)|얼마(?!든)|몇)/;
 // Polite endings that are statements even after a question word ("어떻게 됐는지 공유드려요", "제가 할게요")
-const STATEMENT_YO = /(드려요|게요|께요|그래요)$/;
+// ("~고민이겠네요", "~하더라고요", "~잖아요" are remarks, not questions)
+const STATEMENT_YO = /(드려요|게요|께요|그래요|네요|군요|거든요|잖아요|더라고요)$/;
 
 function stripNoise(text: string): string {
   return text
@@ -117,9 +120,15 @@ export function otherMentions(text: string, selfId: string): string[] {
   return [...new Set(ids)].filter((id) => id !== selfId);
 }
 
-// Reactions that mean "handled" when the recipient adds them to a question.
-// 👀 is intentionally absent — "I saw it" isn't an answer.
-export const DONE_REACTIONS = new Set([
-  "white_check_mark", "heavy_check_mark", "ballot_box_with_check", "check", "done", "+1", "thumbsup",
-  "ok_hand", "ok", "ok_woman", "ok_man", "raised_hands", "확인", "완료",
+// Reactions that mean "seen, not done yet" (or just a laugh). Any other reaction from the person
+// who owes the reply counts as an acknowledgement — workspaces use all kinds of custom emoji
+// for "넵/확인/감사", so a deny-list works better than a fixed allow-list.
+const NOT_AN_ANSWER_REACTIONS = new Set([
+  "eyes", "eyes_shaking", "hourglass", "hourglass_flowing_sand", "loading", "thinking_face", "face_with_monocle",
+  "question", "grey_question", "exclamation", "joy", "rolling_on_the_floor_laughing", "sweat_smile",
+  "확인중", "검토중", "보는중", "고민중", "진행중",
 ]);
+
+export function isAckReaction(name: string): boolean {
+  return !NOT_AN_ANSWER_REACTIONS.has(name.split("::")[0]); // "+1::skin-tone-2" → "+1"
+}

@@ -16,7 +16,7 @@ import {
 } from "@/lib/redis";
 import { AiUnavailableError, aiAvailable, classifyResponse, classifyUserMessage, summarizeQuestion } from "@/lib/ai";
 import { updateUser, type NudgeUser } from "@/lib/db";
-import { DONE_REACTIONS, isCcMention, isLikelyQuestion, mentionsUser, otherMentions } from "@/lib/question";
+import { isAckReaction, isCcMention, isLikelyQuestion, mentionsUser, otherMentions } from "@/lib/question";
 import { localParts, resolveTimezone } from "@/lib/schedule";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -29,7 +29,7 @@ const MAX_NEW_PER_KIND = 60;          // new candidates examined per poll (rest 
 const MAX_AI_CALLS_PER_STREAM = 6;    // per item, separately for thread replies and flat history
 const INCOMING_EXPIRE_MS = 14 * DAY_MS;
 const CONCURRENCY = 4;
-export const SUMMARY_VERSION = 4;
+export const SUMMARY_VERSION = 5; // 5: topics always in Korean
 
 // Search queries and how many 100-result pages each may read per poll
 type QueryKey = "outgoing" | "mentions" | "with";
@@ -429,6 +429,14 @@ async function judgeStreams(
 // a bot replies in the thread/DM, a file is shared back, or I say I sorted it out.
 async function checkOutgoing(ctx: Ctx, f: FollowUp, convType: ConvType, c?: Context): Promise<Verdict> {
   c ??= await loadContext(ctx, f, convType, f.checkedTs ?? f.threadTs);
+  if (c.gone) return { answered: false, gone: true };
+
+  // 👍/✅/"넵" from the other side on my message is their answer (👀 "보는 중" isn't)
+  const acknowledged = c.question?.reactions?.some(
+    (r) => r.name && isAckReaction(r.name) && r.users?.some((u) => u !== ctx.me)
+  );
+  if (acknowledged) return { answered: true };
+
   const relevant = (m: SlackMessage) => isRealMessage(m) && !isBot(m) && !!contentOf(m);
 
   return judgeStreams(
@@ -456,10 +464,8 @@ async function checkIncoming(ctx: Ctx, f: FollowUp, convType: ConvType, c?: Cont
   c ??= await loadContext(ctx, f, convType, f.checkedTs ?? f.threadTs);
   if (c.gone) return { answered: false, gone: true };
 
-  const reacted = c.question?.reactions?.some(
-    // "+1::skin-tone-2" → "+1"
-    (r) => r.name && DONE_REACTIONS.has(r.name.split("::")[0]) && r.users?.includes(ctx.me)
-  );
+  // My 👍/✅/"넵" on the question means handled (👀 "보는 중" doesn't)
+  const reacted = c.question?.reactions?.some((r) => r.name && isAckReaction(r.name) && r.users?.includes(ctx.me));
   if (reacted) return { answered: true };
 
   const responders = new Set([ctx.me]);
@@ -769,25 +775,40 @@ async function fillSummaries(ctx: Ctx): Promise<void> {
     return names.get(id)!;
   };
 
+  // Message preview with mentions shown as names — used until the AI topic is available
+  const preview = async (text: string) => {
+    let out = text;
+    const ids = [...new Set([...text.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)].map((m) => m[1]))];
+    for (const id of ids) {
+      const name = (await nameOf(id)) || "사용자";
+      out = out.replace(new RegExp(`<@${id}(\\|[^>]*)?>`, "g"), `@${name}`);
+    }
+    out = out
+      .replace(/<#[A-Z0-9]+(?:\|([^>]+))?>/g, (_, n) => (n ? `#${n}` : "#채널"))
+      .replace(/<([^|>]+)\|([^>]+)>/g, "$2")
+      .replace(/<([^>]+)>/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+    return out.length > 50 ? `${out.slice(0, 50)}…` : out;
+  };
+
   await mapLimit(
     all,
     CONCURRENCY,
     async (f) => {
-      if (!aiAvailable()) return; // summaries can wait; the list falls back to the message text
       try {
-        const [topic, label] = await Promise.all([
-          summarizeQuestion(f.originalMessage),
-          getConversationLabel(ctx.slack, f.channel),
-        ]);
+        const label = await getConversationLabel(ctx.slack, f.channel);
         let prefix = label;
         if (f.kind === "incoming" && f.askerId && f.convType !== "im") {
           const asker = (await nameOf(f.askerId)).split(" ")[0];
           if (asker) prefix = `${asker} (${label})`;
         }
-        await updateFollowUp(f.kind!, f.userId, f.channel, f.threadTs, {
-          summary: `${prefix} - ${topic}`,
-          summaryVersion: SUMMARY_VERSION,
-        });
+        let topic: string | null = null;
+        if (aiAvailable()) topic = await summarizeQuestion(f.originalMessage).catch(() => null);
+        await updateFollowUp(f.kind!, f.userId, f.channel, f.threadTs, topic
+          ? { summary: `${prefix} - ${topic}`, summaryVersion: SUMMARY_VERSION }
+          // version 0 → the AI topic is retried on a later poll
+          : { summary: `${prefix} - ${await preview(f.originalMessage)}`, summaryVersion: 0 });
       } catch {
         // Non-critical, will retry next poll
       }

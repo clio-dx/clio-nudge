@@ -297,6 +297,62 @@ test("an AI rate limit postpones work instead of failing it, and nothing is lost
   assert.equal((await getUserFollowUps(ME, "outgoing")).length, 2);
 });
 
+test("a reaction from the other side settles my request; 👀 doesn't", async () => {
+  const user = await install();
+  channel("DF", "im", [ME, "UC"]);
+  const thumbs = msg({
+    channel: "DF", user: ME, text: "견적서 검토 부탁드립니다", hoursAgo: 30,
+    reactions: [{ name: "+1::skin-tone-3", users: ["UC"] }],
+  });
+  const custom = msg({
+    channel: "DF", user: ME, text: "회의록 공유해 주실 수 있나요?", hoursAgo: 29,
+    reactions: [{ name: "넵", users: ["UC"] }],
+  });
+  const looking = msg({
+    channel: "DD", user: ME, text: "계약서 확인 부탁드립니다", hoursAgo: 31,
+    reactions: [{ name: "eyes", users: ["UD"] }],
+  });
+  // My own reaction on my own message means nothing
+  channel("DH", "im", [ME, "UE"]);
+  const self = msg({
+    channel: "DH", user: ME, text: "PR 리뷰 부탁드립니다", hoursAgo: 31,
+    reactions: [{ name: "+1", users: [ME] }],
+  });
+
+  await pollUser(user);
+  const outgoing = ids(await getUserFollowUps(ME, "outgoing"));
+  assert.ok(!outgoing.includes(`DF:${thumbs}`), "👍 from the recipient");
+  assert.ok(!outgoing.includes(`DF:${custom}`), "custom 넵 emoji from the recipient");
+  assert.ok(outgoing.includes(`DD:${looking}`), "👀 is not an answer");
+  assert.ok(outgoing.includes(`DH:${self}`), "my own reaction is not an answer");
+});
+
+test("without AI, list rows show a Korean preview with names instead of raw mentions", async () => {
+  const user = await install();
+  workspace.users.set("UP", { name: "박상구(부장)_DX팀" });
+  channel("DG", "im", [ME, "UC"]);
+  const q = msg({ channel: "DG", user: ME, text: "<@UP> 님 일정 확인해 주실 수 있나요?", hoursAgo: 30 });
+  // Tracked by an old version, with an English topic
+  await addFollowUp({
+    kind: "outgoing",
+    userId: ME,
+    channel: "DG",
+    threadTs: q,
+    originalMessage: "<@UP> 님 일정 확인해 주실 수 있나요?",
+    convType: "im",
+    summary: "하은 - assignment discussion",
+    summaryVersion: 3,
+    createdAt: parseFloat(q) * 1000,
+    lastRemindedAt: null,
+    lastActivityAt: 0,
+  });
+  aiFailures.rateLimited = 1000; // model unavailable for this poll
+  await pollUser(user);
+  const row = (await getUserFollowUps(ME, "outgoing")).find((f) => f.threadTs === q)!;
+  assert.match(row.summary!, /^하은 - @박상구\(부장\)_DX팀 님 일정 확인해 주실 수 있나요\?$/);
+  assert.equal(row.summaryVersion, 0, "the AI topic is retried later");
+});
+
 test("notes in my self-DM are never tracked", async () => {
   const user = await install();
   channel("DSELF", "im", [ME, ME]);

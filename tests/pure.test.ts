@@ -13,7 +13,7 @@ import {
   worksWithDailyCronOnly,
   type Schedule,
 } from "../lib/schedule.ts";
-import { isCcMention, isLikelyQuestion, otherMentions } from "../lib/question.ts";
+import { isAckReaction, isCcMention, isLikelyQuestion, otherMentions } from "../lib/question.ts";
 import { PRESETS } from "../lib/presets.ts";
 
 const HOUR = 3600_000;
@@ -319,6 +319,11 @@ test("isLikelyQuestion: Korean and English", () => {
     "문의 사항 있으시면 연락 주세요",
     "편하게 연락 주세요",
     "언제든 말씀해 주세요",
+    // Pointing to someone else (from a real digest)
+    "그룹스 자동 세팅 대상자 라고 합니다. 그룹스 세팅이나 계정생성에 대해서도 채널이나 <@U9> 님께 문의부탁드립니다.",
+    "이건 인사팀에 문의 부탁드립니다",
+    "뭘로 녹음을 받을지가 고민이겠네요.. 앱을 설치해서, 백그라운드로 돌게 할지, 혹은 구글 meet을 사용할지",
+    "어디서 하든 똑같더라고요",
   ];
   for (const t of yes) assert.equal(isLikelyQuestion(t), true, `should be question: ${t}`);
   for (const t of no) assert.equal(isLikelyQuestion(t), false, `should not be question: ${t}`);
@@ -330,6 +335,11 @@ test("recommended presets parse to what the landing page promises", () => {
     const result = schedule(parseCommand(p.command.slice("/nudge ".length)));
     assert.equal(formatSchedule(result), p.schedule, p.id);
   }
+});
+
+test("isAckReaction: any reaction except 'still looking' ones", () => {
+  for (const r of ["+1", "+1::skin-tone-2", "white_check_mark", "넵", "확인했습니다", "pray", "heart"]) assert.equal(isAckReaction(r), true, r);
+  for (const r of ["eyes", "hourglass_flowing_sand", "thinking_face", "확인중", "joy"]) assert.equal(isAckReaction(r), false, r);
 });
 
 test("otherMentions / isCcMention", () => {

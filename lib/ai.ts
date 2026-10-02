@@ -41,26 +41,26 @@ async function generate(prompt: string): Promise<string> {
 }
 
 export async function summarizeQuestion(originalMessage: string): Promise<string> {
-  const text = await generate(`Extract the topic of this Slack message in 2-4 words. Output ONLY the topic, nothing else.
-Write the topic in the same language as the message (Korean message → Korean topic).
+  const text = await generate(`Extract the topic of this Slack message in 2-5 words. Output ONLY the topic, nothing else.
+ALWAYS write the topic in Korean, even when the message is in English. Keep product names, acronyms and code names as they are (PR, API, Jira, Notion).
 
 Examples:
-- "hey can you review the PR I tagged you on?" → "PR review"
-- "what's the latest here?" → "status update"
-- "can I get edit access to that exec summary doc?" → "doc access"
-- "can we get a tax call set up?" → "tax call"
+- "hey can you review the PR I tagged you on?" → "PR 리뷰"
+- "what's the latest here?" → "진행 상황"
+- "can I get edit access to that exec summary doc?" → "문서 편집 권한"
+- "let's discuss the assignment" → "업무 배정 논의"
 - "이번 주 배포 일정 언제인가요?" → "배포 일정"
 - "견적서 최종본 공유 부탁드립니다" → "견적서 공유"
 - "내일 미팅 몇 시로 할까요" → "미팅 시간"
 - "혹시 이 데이터 어디서 뽑으셨어요?" → "데이터 출처"
 
-If the message is vague or you can't determine a specific topic, use a generic label like "follow-up" / "확인 요청". NEVER explain your reasoning. Output ONLY the topic.
+If the message is vague or you can't determine a specific topic, use "확인 요청". NEVER explain your reasoning. Output ONLY the topic.
 
 Message: "${originalMessage}"`);
 
-  const cleaned = text.trim().toLowerCase().replace(/[.,"'!?]/g, "");
-  // If the model returned something too long, it probably over-explained — use fallback
-  if (cleaned.split(/\s+/).length > 5 || cleaned.length > 40) return "follow-up";
+  const cleaned = text.trim().replace(/[.,"'!?]/g, "");
+  // Over-long or non-Korean output means the model explained itself — use a neutral label
+  if (cleaned.split(/\s+/).length > 6 || cleaned.length > 40 || !/[가-힣]/.test(cleaned)) return "확인 요청";
   return cleaned;
 }
 

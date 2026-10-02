@@ -115,7 +115,7 @@ export async function getUserTimezone(client: WebClient, userId: string): Promis
 // Resolve a channel ID to a short label: name for DMs, #channel for channels
 export async function getConversationLabel(client: WebClient, channel: string): Promise<string> {
   const ch = await conversationInfo(client, channel);
-  if (!ch) return "thread";
+  if (!ch) return "대화";
 
   if (ch.is_im) {
     if (!ch.user) return "DM";
@@ -127,7 +127,7 @@ export async function getConversationLabel(client: WebClient, channel: string): 
   if (ch.is_mpim) return "그룹 DM";
 
   const name = ch.name_normalized || ch.name;
-  return name ? `#${name}` : "channel";
+  return name ? `#${name}` : "채널";
 }
 
 // Check if a channel is a DM or MPIM (group DM)
