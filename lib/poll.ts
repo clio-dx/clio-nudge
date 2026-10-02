@@ -817,6 +817,12 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
   } finally {
     await releaseLock(lockKey);
     stats.ms = Date.now() - started;
+    // Counts only (no message text) — e.g. searched.with shows whether DM discovery works
+    console.log(
+      "poll",
+      user.slackUserId,
+      JSON.stringify({ ...stats, errors: stats.errors.length, firstError: stats.errors[0]?.slice(0, 200) })
+    );
   }
   return stats;
 }
