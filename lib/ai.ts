@@ -3,28 +3,34 @@ import { gateway } from "@ai-sdk/gateway";
 
 // Default model - uses Vercel AI Gateway format: provider/model
 const MODEL = process.env.AI_MODEL || "anthropic/claude-haiku-4.5";
+// Bounded so a slow model call can't push a cron run past its time limit
+const AI_TIMEOUT_MS = 20_000;
 
 export async function summarizeQuestion(originalMessage: string): Promise<string> {
   const { text } = await generateText({
     model: gateway.languageModel(MODEL),
-    prompt: `Extract the topic of this Slack message in 2-3 words. Output ONLY the topic, nothing else.
+    timeout: AI_TIMEOUT_MS,
+    prompt: `Extract the topic of this Slack message in 2-4 words. Output ONLY the topic, nothing else.
+Write the topic in the same language as the message (Korean message → Korean topic).
 
 Examples:
 - "hey can you review the PR I tagged you on?" → "PR review"
 - "what's the latest here?" → "status update"
 - "can I get edit access to that exec summary doc?" → "doc access"
-- "want me to delete it?" → "follow-up"
 - "can we get a tax call set up?" → "tax call"
-- "lol what was claude's answer to that question?" → "claude response"
+- "이번 주 배포 일정 언제인가요?" → "배포 일정"
+- "견적서 최종본 공유 부탁드립니다" → "견적서 공유"
+- "내일 미팅 몇 시로 할까요" → "미팅 시간"
+- "혹시 이 데이터 어디서 뽑으셨어요?" → "데이터 출처"
 
-If the message is vague or you can't determine a specific topic, use a generic label like "follow-up" or "open question". NEVER explain your reasoning. Output ONLY 2-3 lowercase words.
+If the message is vague or you can't determine a specific topic, use a generic label like "follow-up" / "확인 요청". NEVER explain your reasoning. Output ONLY the topic.
 
 Message: "${originalMessage}"`,
   });
 
   const cleaned = text.trim().toLowerCase().replace(/[.,"'!?]/g, "");
   // If the model returned something too long, it probably over-explained — use fallback
-  if (cleaned.split(" ").length > 5) return "follow-up";
+  if (cleaned.split(/\s+/).length > 5 || cleaned.length > 40) return "follow-up";
   return cleaned;
 }
 
@@ -37,18 +43,20 @@ export async function classifyResponse(
 ): Promise<ResponseClassification> {
   const { text } = await generateText({
     model: gateway.languageModel(MODEL),
+    timeout: AI_TIMEOUT_MS,
     prompt: `You are analyzing a Slack conversation. Someone asked a question and received a response.
 Determine if the response is a substantive answer OR a non-committal acknowledgment.
+Messages may be in Korean or English.
 
-Non-committal examples: "looking into it", "will check", "let me get back to you", "checking now", "one sec", "on it"
+Non-committal examples: "looking into it", "will check", "let me get back to you", "checking now", "one sec", "on it",
+"확인해볼게요", "알아볼게요", "잠시만요", "체크해볼게요", "보고 말씀드릴게요", "나중에 볼게요", "회의 끝나고 볼게요", "넵 확인중입니다"
 Answer examples:
 - Actual information, solutions, explanations
-- "yes", "no", direct responses to the question
-- Agreement with a plan: "agree", "sounds good", "will do"
-- Closure responses: "thanks for...", "perfect", "got it, I'll..."
+- "yes", "no", "네", "아니요", direct responses to the question
+- Agreement with a plan: "agree", "sounds good", "will do", "좋아요", "그렇게 하죠", "진행해주세요"
+- Closure responses: "thanks for...", "perfect", "got it, I'll...", "감사합니다", "해결됐어요", "반영했습니다"
 - Any response that indicates the conversation can move forward
-- Links/URLs (sharing a resource IS a valid answer)
-- Messages containing hyperlinks to docs, files, or websites
+- Links/URLs or files (sharing a resource IS a valid answer)
 
 If the response contains acknowledgment WITH a next action or agreement, classify as "answer".
 Only classify as "non-committal" if the person is purely deferring without substance.
@@ -70,10 +78,14 @@ export async function classifyUserMessage(
 ): Promise<UserMessageClassification> {
   const { text } = await generateText({
     model: gateway.languageModel(MODEL),
-    prompt: `You are analyzing a Slack conversation. Someone asked a question earlier and is now sending another message in the same thread.
+    timeout: AI_TIMEOUT_MS,
+    prompt: `You are analyzing a Slack conversation. Someone asked a question earlier and is now sending another message in the same conversation.
+Messages may be in Korean or English.
 Determine if their new message is:
-- A FOLLOW-UP: they're still waiting for an answer (e.g., "bump", "any update?", "following up", "would love an update", "hey X, checking in on this")
-- SELF-RESOLVED: they figured it out themselves or no longer need help (e.g., "nvm", "figured it out", "never mind", "all good", "resolved this", "closing the loop - we went with X")
+- A FOLLOW-UP: they're still waiting for an answer (e.g., "bump", "any update?", "following up", "hey X, checking in on this", "혹시 확인되셨을까요?", "리마인드 드려요", "이거 어떻게 됐나요")
+- SELF-RESOLVED: they figured it out themselves or no longer need help (e.g., "nvm", "figured it out", "never mind", "all good", "closing the loop - we went with X", "아 해결했어요", "찾았어요", "괜찮습니다 처리했어요", "이건 무시해주세요")
+
+Short acknowledgements or thanks on their own ("thanks", "ok", "넵", "감사합니다", "네 알겠습니다") are FOLLOW-UP — they are usually a reply to "I'll check" and the question is still open. Only answer SELF-RESOLVED when the message says the issue is solved or no longer needed.
 
 Original question: "${originalQuestion}"
 

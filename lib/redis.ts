@@ -4,12 +4,21 @@ import { Redis } from "@upstash/redis";
 // (the names injected by the Vercel Marketplace Upstash integration).
 export const redis = Redis.fromEnv();
 
+// outgoing = I asked, waiting for an answer
+// incoming = someone asked me, waiting for my reply
+export type FollowUpKind = "outgoing" | "incoming";
+export type ConvType = "im" | "mpim" | "channel";
+
 export interface FollowUp {
-  userId: string;              // Slack user ID who asked the question
+  kind?: FollowUpKind;         // missing on records created before incoming tracking existed → outgoing
+  userId: string;              // Nudge user this item belongs to
   channel: string;
   threadTs: string;            // The message timestamp (unique identifier)
   parentThreadTs?: string;     // Parent thread ts (if message is inside a thread)
   originalMessage: string;
+  convType?: ConvType;
+  askerId?: string;            // incoming: who asked
+  checkedTs?: string;          // latest reply ts already judged "not an answer"
   summary?: string;
   summaryVersion?: number;
   createdAt: number;
@@ -17,91 +26,148 @@ export interface FollowUp {
   lastActivityAt: number;
 }
 
-// Per-user keys
-function getUserFollowupsKey(userId: string): string {
-  return `followups:${userId}`;
+export function kindOf(f: Pick<FollowUp, "kind">): FollowUpKind {
+  return f.kind ?? "outgoing";
 }
 
-function getFollowupKey(userId: string, channel: string, threadTs: string): string {
-  return `followup:${userId}:${channel}:${threadTs}`;
+// Outgoing keys keep their original names so existing data stays valid
+function setKey(kind: FollowUpKind, userId: string): string {
+  return kind === "incoming" ? `incomings:${userId}` : `followups:${userId}`;
+}
+
+function itemKey(kind: FollowUpKind, userId: string, channel: string, threadTs: string): string {
+  return kind === "incoming"
+    ? `incoming:${userId}:${channel}:${threadTs}`
+    : `followup:${userId}:${channel}:${threadTs}`;
+}
+
+// Identifier shared by the seen-list, digest diffing and dismiss buttons
+export function itemId(kind: FollowUpKind, channel: string, threadTs: string): string {
+  return `${kind}:${channel}:${threadTs}`;
 }
 
 export async function addFollowUp(followUp: FollowUp): Promise<void> {
-  const key = getFollowupKey(followUp.userId, followUp.channel, followUp.threadTs);
-  const setKey = getUserFollowupsKey(followUp.userId);
-  await redis.set(key, followUp);
-  await redis.zadd(setKey, {
-    score: followUp.createdAt,
-    member: key,
-  });
+  const kind = kindOf(followUp);
+  const key = itemKey(kind, followUp.userId, followUp.channel, followUp.threadTs);
+  await redis.set(key, { ...followUp, kind });
+  await redis.zadd(setKey(kind, followUp.userId), { score: followUp.createdAt, member: key });
 }
 
 export async function getFollowUp(
+  kind: FollowUpKind,
   userId: string,
   channel: string,
   threadTs: string
 ): Promise<FollowUp | null> {
-  const key = getFollowupKey(userId, channel, threadTs);
-  return redis.get<FollowUp>(key);
+  return redis.get<FollowUp>(itemKey(kind, userId, channel, threadTs));
 }
 
 export async function updateFollowUp(
+  kind: FollowUpKind,
   userId: string,
   channel: string,
   threadTs: string,
   updates: Partial<FollowUp>
 ): Promise<void> {
-  const existing = await getFollowUp(userId, channel, threadTs);
+  const existing = await getFollowUp(kind, userId, channel, threadTs);
   if (!existing) return;
-
-  const key = getFollowupKey(userId, channel, threadTs);
-  await redis.set(key, { ...existing, ...updates });
+  await redis.set(itemKey(kind, userId, channel, threadTs), { ...existing, ...updates });
 }
 
 export async function removeFollowUp(
+  kind: FollowUpKind,
   userId: string,
   channel: string,
   threadTs: string
 ): Promise<void> {
-  const key = getFollowupKey(userId, channel, threadTs);
-  const setKey = getUserFollowupsKey(userId);
+  const key = itemKey(kind, userId, channel, threadTs);
   await redis.del(key);
-  await redis.zrem(setKey, key);
+  await redis.zrem(setKey(kind, userId), key);
 }
 
-export async function getUserFollowUps(userId: string): Promise<FollowUp[]> {
-  const setKey = getUserFollowupsKey(userId);
-  const keys = await redis.zrange<string[]>(setKey, 0, -1);
+export async function getUserFollowUps(userId: string, kind: FollowUpKind): Promise<FollowUp[]> {
+  const sKey = setKey(kind, userId);
+  const keys = await redis.zrange<string[]>(sKey, 0, -1);
   if (keys.length === 0) return [];
 
-  const followUps = await Promise.all(
-    keys.map((key) => redis.get<FollowUp>(key))
-  );
+  const values = await redis.mget<(FollowUp | null)[]>(...keys);
+  // Drop index entries whose item vanished
+  const dangling = keys.filter((_, i) => !values[i]);
+  if (dangling.length > 0) await redis.zrem(sKey, ...dangling);
 
-  return followUps.filter((f): f is FollowUp => f !== null);
+  return values
+    .filter((f): f is FollowUp => f !== null)
+    .map((f) => ({ ...f, kind: kindOf(f) }));
 }
 
 export async function isTracked(
+  kind: FollowUpKind,
   userId: string,
   channel: string,
   threadTs: string
 ): Promise<boolean> {
-  const key = getFollowupKey(userId, channel, threadTs);
-  const exists = await redis.exists(key);
-  return exists === 1;
+  return (await redis.exists(itemKey(kind, userId, channel, threadTs))) === 1;
 }
 
-// Clear all followups for a user
+// ---------------------------------------------------------------------------
+// Seen list: messages already judged answered, not directed at the user, or
+// dismissed — so polls don't re-classify (or resurrect) them.
+
+const SEEN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+function seenKey(userId: string): string {
+  return `seen:${userId}`;
+}
+
+export async function markSeen(userId: string, id: string, messageMs: number): Promise<void> {
+  await redis.zadd(seenKey(userId), { score: messageMs, member: id });
+}
+
+export async function getSeen(userId: string): Promise<Set<string>> {
+  await redis.zremrangebyscore(seenKey(userId), 0, Date.now() - SEEN_RETENTION_MS);
+  const ids = await redis.zrange<string[]>(seenKey(userId), 0, -1);
+  return new Set(ids);
+}
+
+// ---------------------------------------------------------------------------
+// Locks
+
+export async function acquireLock(key: string, ttlSeconds: number): Promise<boolean> {
+  const result = await redis.set(key, Date.now(), { nx: true, ex: ttlSeconds });
+  return result === "OK";
+}
+
+export async function releaseLock(key: string): Promise<void> {
+  await redis.del(key);
+}
+
+// ---------------------------------------------------------------------------
+// Tick bookkeeping — lets /nudge tell whether the hourly trigger is running.
+
+const TICKS_KEY = "nudge:ticks";
+
+export async function recordTick(slot: number, source: string): Promise<void> {
+  await redis.zadd(TICKS_KEY, { score: slot, member: `${slot}` });
+  await redis.zremrangebyscore(TICKS_KEY, 0, slot - 48);
+  await redis.set("nudge:lastTick", { slot, source, at: Date.now() });
+}
+
+// Distinct hours in the last `hours` hours that saw at least one tick
+export async function recentTickHours(currentSlot: number, hours: number): Promise<number> {
+  return redis.zcount(TICKS_KEY, currentSlot - hours + 1, currentSlot);
+}
+
+// ---------------------------------------------------------------------------
+
 export async function clearUserFollowUps(userId: string): Promise<number> {
-  const setKey = getUserFollowupsKey(userId);
-  const keys = await redis.zrange<string[]>(setKey, 0, -1);
-
   let deleted = 0;
-  for (const key of keys) {
-    await redis.del(key);
-    deleted++;
+  for (const kind of ["outgoing", "incoming"] as const) {
+    const sKey = setKey(kind, userId);
+    const keys = await redis.zrange<string[]>(sKey, 0, -1);
+    if (keys.length > 0) await redis.del(...keys);
+    deleted += keys.length;
+    await redis.del(sKey);
   }
-  await redis.del(setKey);
-
+  await redis.del(seenKey(userId));
   return deleted;
 }

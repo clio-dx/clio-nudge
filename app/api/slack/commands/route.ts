@@ -1,323 +1,280 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
-import { verifySlackRequest, getThreadLink, getTeamUrl, escapeSlackText, getConversationLabel, createSlackClient } from "@/lib/slack";
-import { getUser, updateUser, DEFAULT_REMINDER_HOURS } from "@/lib/db";
-import { getUserFollowUps, updateFollowUp } from "@/lib/redis";
-import { summarizeQuestion } from "@/lib/ai";
+import { createSlackClient, getUserTimezone, verifySlackRequest } from "@/lib/slack";
+import { getUser, updateUser, type NudgeUser } from "@/lib/db";
+import { pollUser } from "@/lib/poll";
+import { buildDigestBlocks, formatAge, groupCounts, loadVisible, MIN_AGE_MS } from "@/lib/digest";
+import { getUserFollowUps } from "@/lib/redis";
+import { hourlyTriggerActive, settleBy, teamUrlFor } from "@/lib/tick";
+import { applyScheduleUpdate, parseCommand } from "@/lib/command";
+import {
+  currentSlot,
+  formatSchedule,
+  formatSlotTime,
+  formatTimezone,
+  isValidTimezone,
+  nextSlotTime,
+  resolveSchedule,
+  resolveTimezone,
+  worksWithDailyCronOnly,
+} from "@/lib/schedule";
+import { HELP_TEXT, HOURLY_INACTIVE_WARNING, INTERVAL_NOTE, NOT_INSTALLED_TEXT } from "@/lib/messages";
 
-// Hours ahead of UTC (simplified - no DST)
-const TZ_OFFSETS: Record<string, number> = { PT: -8, KST: 9 };
-const DEFAULT_TIMEZONE = "KST";
+// /nudge refresh polls Slack inside waitUntil
+export const maxDuration = 300;
 
-function utcOffset(timezone: string): number {
-  return TZ_OFFSETS[timezone] ?? 0;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Block = any;
+
+interface Reply {
+  text?: string;
+  blocks?: Block[];
+  replace_original?: boolean;
 }
 
-// Parse time like "9am", "2pm", "14:00" to UTC hour
-function parseTimeToUTC(timeStr: string, timezone: string): number | null {
-  const lower = timeStr.toLowerCase().trim();
-
-  // Parse 12-hour format (9am, 2pm)
-  const match12 = lower.match(/^(\d{1,2})(am|pm)$/);
-  if (match12) {
-    let hour = parseInt(match12[1]);
-    const isPM = match12[2] === "pm";
-    if (hour === 12) hour = isPM ? 12 : 0;
-    else if (isPM) hour += 12;
-
-    return (hour - utcOffset(timezone) + 24) % 24;
-  }
-
-  // Parse 24-hour format (14:00, 9:00)
-  const match24 = lower.match(/^(\d{1,2}):?(\d{2})?$/);
-  if (match24) {
-    const hour = parseInt(match24[1]);
-    return (hour - utcOffset(timezone) + 24) % 24;
-  }
-
-  return null;
-}
-
-function formatUTCHourToLocal(utcHour: number, timezone: string): string {
-  let localHour = (utcHour + utcOffset(timezone) + 24) % 24;
-  const isPM = localHour >= 12;
-  if (localHour === 0) localHour = 12;
-  else if (localHour > 12) localHour -= 12;
-  return `${localHour}${isPM ? "pm" : "am"}`;
-}
-
-function formatSchedule(user: { reminderHours?: number[]; reminderInterval?: number; timezone?: string }): string {
-  const timezone = user.timezone || DEFAULT_TIMEZONE;
-
-  if (user.reminderInterval) {
-    if (user.reminderInterval === 1) {
-      return "every hour";
-    }
-    return `every ${user.reminderInterval} hours`;
-  }
-
-  const hours = user.reminderHours || DEFAULT_REMINDER_HOURS;
-  if (hours.length === 0) {
-    return "disabled";
-  }
-
-  const times = hours.map(h => formatUTCHourToLocal(h, timezone)).join(" and ");
-  return `${times} (${timezone})`;
-}
-
-async function handleNudgeCommand(responseUrl: string, userId: string, text: string) {
-  const user = await getUser(userId);
-  if (!user) {
-    await fetch(responseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        response_type: "ephemeral",
-        text: `You haven't installed Nudge yet. Visit ${process.env.NEXT_PUBLIC_APP_URL} to get started.`,
-      }),
-    });
-    return;
-  }
-
-  const args = text.trim().toLowerCase();
-  const timezone = user.timezone || DEFAULT_TIMEZONE;
-
-  // Show current settings
-  if (!args || args === "settings" || args === "status") {
-    const schedule = formatSchedule(user);
-
-    await fetch(responseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        response_type: "ephemeral",
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `*Your Nudge settings:*\n\n📅 Reminders: *${schedule}*\n\nCommands:\n• \`/nudge list\` - show all pending follow-ups\n• \`/nudge hourly\` - remind every hour\n• \`/nudge 9am 5pm\` - remind at specific times\n• \`/nudge off\` - disable reminders`,
-            },
-          },
-        ],
-      }),
-    });
-    return;
-  }
-
-  // Show all follow-ups with dismiss buttons
-  if (args === "list" || args === "all" || args === "show") {
-    const allFollowUps = await getUserFollowUps(userId);
-
-    // Only show questions that are at least 24 hours old
-    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const followUps = allFollowUps.filter(f => f.createdAt < twentyFourHoursAgo);
-
-    if (followUps.length === 0) {
-      await fetch(responseUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          response_type: "ephemeral",
-          text: "🎉 *All caught up!* No pending follow-ups.",
-        }),
-      });
-      return;
-    }
-
-    // Sort by createdAt (oldest first)
-    followUps.sort((a, b) => a.createdAt - b.createdAt);
-
-    // Build blocks with dismiss buttons - show ALL follow-ups
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const blocks: any[] = [
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `*You have ${followUps.length} pending follow-up${followUps.length > 1 ? "s" : ""}:*`,
-        },
-      },
-    ];
-
-    // Generate summaries and resolve conversation labels
-    const SUMMARY_VERSION = 3;
-    const slackUser = createSlackClient(user.userToken);
-    await Promise.all(
-      followUps.map(async (f) => {
-        if (!f.summary || f.summaryVersion !== SUMMARY_VERSION) {
-          try {
-            const [topic, label] = await Promise.all([
-              summarizeQuestion(f.originalMessage),
-              getConversationLabel(slackUser, f.channel),
-            ]);
-            f.summary = `${label} - ${topic}`;
-            f.summaryVersion = SUMMARY_VERSION;
-            await updateFollowUp(f.userId, f.channel, f.threadTs, {
-              summary: f.summary,
-              summaryVersion: SUMMARY_VERSION,
-            });
-          } catch {
-            f.summary = f.originalMessage.length > 80
-              ? f.originalMessage.slice(0, 80) + "..."
-              : f.originalMessage;
-          }
-        }
-      })
-    );
-
-    const teamUrl = await getTeamUrl(slackUser);
-    followUps.forEach((f, i) => {
-      const link = getThreadLink(teamUrl, f.channel, f.threadTs, f.parentThreadTs);
-      const hoursAgo = Math.round((Date.now() - f.createdAt) / (1000 * 60 * 60));
-      const preview = escapeSlackText(f.summary || f.originalMessage);
-
-      blocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `${i + 1}. <${link}|${preview}> _(${hoursAgo}h ago)_`,
-        },
-        accessory: {
-          type: "button",
-          text: {
-            type: "plain_text",
-            text: "Dismiss",
-            emoji: true,
-          },
-          action_id: `dismiss_followup_${i}`,
-          value: JSON.stringify({
-            userId: userId,
-            channel: f.channel,
-            threadTs: f.threadTs,
-          }),
-        },
-      });
-    });
-
-    // Slack has a limit of 50 blocks, so truncate if needed
-    if (blocks.length > 49) {
-      blocks.length = 49;
-      blocks.push({
-        type: "context",
-        elements: [
-          {
-            type: "mrkdwn",
-            text: "_Showing first 48 follow-ups_",
-          },
-        ],
-      });
-    }
-
-    await fetch(responseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        response_type: "ephemeral",
-        blocks,
-      }),
-    });
-    return;
-  }
-
-  // Turn off reminders
-  if (args === "off" || args === "disable" || args === "stop") {
-    await updateUser(userId, { reminderHours: [], reminderInterval: undefined });
-    await fetch(responseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        response_type: "ephemeral",
-        text: "✓ Reminders disabled. Use `/nudge` anytime to re-enable.",
-      }),
-    });
-    return;
-  }
-
-  // Check for "hourly" or "every hour"
-  if (args === "hourly" || args === "every hour") {
-    await updateUser(userId, { reminderInterval: 1, reminderHours: undefined, timezone });
-    await fetch(responseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        response_type: "ephemeral",
-        text: "✓ Reminders set for *every hour*",
-      }),
-    });
-    return;
-  }
-
-  // Check for "every X hours" pattern
-  const everyMatch = args.match(/^every\s+(\d+)\s*h(?:ours?)?$/);
-  if (everyMatch) {
-    const interval = parseInt(everyMatch[1]);
-    if (interval >= 1 && interval <= 24) {
-      await updateUser(userId, { reminderInterval: interval, reminderHours: undefined, timezone });
-      await fetch(responseUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          response_type: "ephemeral",
-          text: `✓ Reminders set for *every ${interval} hour${interval > 1 ? "s" : ""}*`,
-        }),
-      });
-      return;
-    }
-  }
-
-  // Check for shorthand like "2h", "4h"
-  const shorthandMatch = args.match(/^(\d+)h$/);
-  if (shorthandMatch) {
-    const interval = parseInt(shorthandMatch[1]);
-    if (interval >= 1 && interval <= 24) {
-      await updateUser(userId, { reminderInterval: interval, reminderHours: undefined, timezone });
-      await fetch(responseUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          response_type: "ephemeral",
-          text: `✓ Reminders set for *every ${interval} hour${interval > 1 ? "s" : ""}*`,
-        }),
-      });
-      return;
-    }
-  }
-
-  // Parse schedule times (9am, 9am 5pm, etc.)
-  const timeParts = args.split(/[\s,]+/).filter(Boolean);
-  const utcHours: number[] = [];
-
-  for (const part of timeParts) {
-    const hour = parseTimeToUTC(part, timezone);
-    if (hour !== null) {
-      utcHours.push(hour);
-    }
-  }
-
-  if (utcHours.length === 0) {
-    await fetch(responseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        response_type: "ephemeral",
-        text: "Couldn't understand that schedule. Try:\n• `/nudge hourly`\n• `/nudge every 2 hours` or `/nudge 2h`\n• `/nudge 9am` or `/nudge 9am 5pm`\n• `/nudge off`",
-      }),
-    });
-    return;
-  }
-
-  await updateUser(userId, { reminderHours: utcHours, reminderInterval: undefined, timezone });
-  const times = utcHours.map(h => formatUTCHourToLocal(h, timezone)).join(" and ");
-
+async function respond(responseUrl: string, reply: Reply): Promise<void> {
   await fetch(responseUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      response_type: "ephemeral",
-      text: `✓ Reminders set for *${times}* (${timezone})`,
-    }),
+    body: JSON.stringify({ response_type: "ephemeral", ...reply }),
   });
+}
+
+function section(text: string): Block {
+  return { type: "section", text: { type: "mrkdwn", text } };
+}
+
+function context(text: string): Block {
+  return { type: "context", elements: [{ type: "mrkdwn", text }] };
+}
+
+// After a schedule/timezone change, start from the next slot instead of catching up on one
+// that already passed (the reply announces "다음 알림 …").
+function skipPastSlots(user: NudgeUser): Pick<NudgeUser, "lastSlot"> {
+  return { lastSlot: Math.max(user.lastSlot ?? -Infinity, currentSlot(Date.now())) };
+}
+
+// Pick up the timezone from the Slack profile the first time we see the user
+async function ensureTimezone(user: NudgeUser): Promise<NudgeUser> {
+  if (user.tz) return user;
+  const tz = await getUserTimezone(createSlackClient(user.userToken), user.slackUserId);
+  if (!tz || !isValidTimezone(tz)) return user;
+  return (await updateUser(user.slackUserId, { tz, ...skipPastSlots(user) })) ?? user;
+}
+
+// "평일 오전 8시 (한국 시간)" + next delivery + warnings
+async function scheduleSummary(user: NudgeUser): Promise<{ line: string; notes: string[] }> {
+  const { schedule, paused } = resolveSchedule(user);
+  const tz = resolveTimezone(user);
+  if (paused) return { line: "*꺼짐* — `/nudge on`으로 다시 켤 수 있어요", notes: [] };
+
+  const notes: string[] = [];
+  const next = nextSlotTime(schedule, tz, Date.now());
+  const nextText = next ? ` · 다음 알림 ${formatSlotTime(next, tz)}` : "";
+  if (schedule.kind === "interval") notes.push(INTERVAL_NOTE);
+  if (!worksWithDailyCronOnly(schedule, tz, Date.now()) && !(await hourlyTriggerActive())) {
+    notes.push(HOURLY_INACTIVE_WARNING);
+  }
+  return { line: `*${formatSchedule(schedule)}* (${formatTimezone(tz)})${nextText}`, notes };
+}
+
+const QUICK_COMMANDS =
+  "`/nudge list` 목록 · `/nudge refresh` 지금 확인 · `/nudge 매일 9시` · `/nudge 매시간` · `/nudge off` · `/nudge help` 전체 사용법";
+
+async function statusReply(user: NudgeUser): Promise<Reply> {
+  const { line, notes } = await scheduleSummary(user);
+  const counts = groupCounts(await loadVisible(user));
+  const onOff = (v: boolean | undefined) => (v === false ? "꺼짐" : "켜짐");
+  const lastCheck = user.lastPolledAt ? `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)}` : "아직 확인 전";
+
+  return {
+    blocks: [
+      section(
+        [
+          "*⚙️ 내 Nudge 설정*",
+          `• ⏰ 알림: ${line}`,
+          `• 🎯 추적: 📥 받은 질문 ${onOff(user.trackIncoming)} · 📤 보낸 질문 ${onOff(user.trackOutgoing)}`,
+          `• 📋 지금 확인할 항목: 📥 ${counts.incoming}개 · 📤 ${counts.outgoing}개 _(${lastCheck})_`,
+        ].join("\n")
+      ),
+      ...notes.map(context),
+      context(QUICK_COMMANDS),
+    ],
+  };
+}
+
+async function listReply(user: NudgeUser, footer?: string): Promise<Reply> {
+  const [visible, teamUrl] = await Promise.all([loadVisible(user), teamUrlFor(user)]);
+  const lastCheck = user.lastPolledAt
+    ? `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)} · 새로 확인하려면 \`/nudge refresh\``
+    : "아직 Slack을 확인하기 전이에요 · `/nudge refresh`로 지금 확인해 보세요";
+  return {
+    blocks: buildDigestBlocks(visible, teamUrl, { maxPerSection: 20, footer: footer ?? lastCheck, isList: true }),
+  };
+}
+
+// Tracked items still inside their grace period (2h / 24h), so not listed yet
+async function notYetVisible(user: NudgeUser): Promise<number> {
+  const now = Date.now();
+  const [incoming, outgoing] = await Promise.all([
+    user.trackIncoming !== false ? getUserFollowUps(user.slackUserId, "incoming") : [],
+    user.trackOutgoing !== false ? getUserFollowUps(user.slackUserId, "outgoing") : [],
+  ]);
+  return [...incoming, ...outgoing].filter((f) => now - f.createdAt < MIN_AGE_MS[f.kind ?? "outgoing"]).length;
+}
+
+// /nudge refresh: poll now, then replace the "확인 중" message with the list
+async function refresh(responseUrl: string, user: NudgeUser): Promise<void> {
+  const userId = user.slackUserId;
+  const started = Date.now();
+  const stats = await settleBy(pollUser(user, started + 200_000), started + 240_000);
+  if (!stats) {
+    const stale = (await getUser(userId)) ?? user;
+    await respond(responseUrl, {
+      replace_original: true,
+      ...(await listReply(stale, "확인할 메시지가 많아 아직 확인 중이에요. 몇 분 뒤 `/nudge list`로 다시 봐 주세요.")),
+    });
+    return;
+  }
+  if (stats.skipped) {
+    await respond(responseUrl, {
+      replace_original: true,
+      text: "⏳ 이미 확인 중이에요. 잠시 뒤 `/nudge list`로 결과를 확인해 주세요.",
+    });
+    return;
+  }
+  const found = stats.outgoing.tracked + stats.incoming.tracked;
+  const resolved = stats.outgoing.resolved + stats.incoming.resolved + stats.incoming.expired;
+  const deferred = stats.outgoing.deferred + stats.incoming.deferred;
+  const fresh = (await getUser(userId)) ?? user;
+  const waiting = await notYetVisible(fresh);
+  const parts = [`방금 확인했어요 · 새로 찾은 질문 ${found}개 · 정리된 항목 ${resolved}개`];
+  if (waiting > 0) {
+    parts.push(`대기 중인 질문 ${waiting}개는 받은 질문 2시간, 보낸 질문 24시간이 지나면 목록에 보여요`);
+  }
+  if (deferred > 0 || stats.incomplete.length > 0) parts.push("확인할 메시지가 많아 일부는 다음 확인 때 이어서 볼게요");
+  if (stats.errors.length > 0) parts.push(`일부 대화는 확인하지 못했어요 (${stats.errors.length}건)`);
+  await respond(responseUrl, { replace_original: true, ...(await listReply(fresh, parts.join(" · "))) });
+}
+
+async function handleNudgeCommand(responseUrl: string, userId: string, text: string) {
+  const stored = await getUser(userId);
+  if (!stored) {
+    await respond(responseUrl, { text: NOT_INSTALLED_TEXT(process.env.NEXT_PUBLIC_APP_URL || "") });
+    return;
+  }
+  const user = await ensureTimezone(stored);
+  const cmd = parseCommand(text);
+
+  switch (cmd.type) {
+    case "status":
+      await respond(responseUrl, await statusReply(user));
+      return;
+
+    case "help":
+      await respond(responseUrl, { text: HELP_TEXT });
+      return;
+
+    case "list":
+      await respond(responseUrl, await listReply(user));
+      return;
+
+    case "refresh": {
+      await respond(responseUrl, { text: "🔍 Slack을 확인하고 있어요… 보통 1분 안에 끝나요." });
+      try {
+        await refresh(responseUrl, user);
+      } catch (err) {
+        console.error("/nudge refresh failed:", err);
+        await respond(responseUrl, {
+          replace_original: true,
+          text: "😵 확인 중에 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요.",
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    case "pause":
+      await updateUser(userId, { paused: true });
+      await respond(responseUrl, {
+        text: "🔕 알림을 껐어요. `/nudge refresh`로 언제든 직접 확인할 수 있고, `/nudge on`으로 다시 켤 수 있어요.",
+      });
+      return;
+
+    case "resume": {
+      // Store the schedule explicitly so a legacy "off" record ({reminderHours: []}) can't keep it
+      // paused. Only coming back from a real pause skips slots that already passed today;
+      // a no-op "/nudge on" must not cancel today's pending digest.
+      const wasPaused = resolveSchedule(user).paused;
+      const updated =
+        (await updateUser(userId, {
+          schedule: resolveSchedule(user).schedule,
+          paused: false,
+          reminderHours: undefined,
+          reminderInterval: undefined,
+          ...(wasPaused ? skipPastSlots(user) : {}),
+        })) ?? user;
+      const { line, notes } = await scheduleSummary(updated);
+      await respond(responseUrl, { blocks: [section(`🔔 알림을 다시 켰어요: ${line}`), ...notes.map(context)] });
+      return;
+    }
+
+    case "track": {
+      const updates: Partial<NudgeUser> = {};
+      if (cmd.incoming !== undefined) updates.trackIncoming = cmd.incoming;
+      if (cmd.outgoing !== undefined) updates.trackOutgoing = cmd.outgoing;
+      const updated = (await updateUser(userId, updates)) ?? user;
+      const what = cmd.incoming !== undefined ? "📥 받은 질문" : "📤 보낸 질문";
+      const value = (cmd.incoming ?? cmd.outgoing) ? "켰어요" : "껐어요";
+      const lines = [`✓ ${what} 추적을 ${value}.`];
+      if (updated.trackIncoming === false && updated.trackOutgoing === false) {
+        lines.push("⚠️ 받은 질문과 보낸 질문이 모두 꺼져 있어서 알림이 오지 않아요.");
+      }
+      await respond(responseUrl, { text: lines.join("\n") });
+      return;
+    }
+
+    case "timezone": {
+      let tz: string | null = cmd.tz;
+      if (tz === "auto") tz = await getUserTimezone(createSlackClient(user.userToken), userId);
+      if (!tz || !isValidTimezone(tz)) {
+        await respond(responseUrl, { text: "Slack 프로필에서 시간대를 가져오지 못했어요. 예: `/nudge tz Asia/Seoul`" });
+        return;
+      }
+      const updated = (await updateUser(userId, { tz, ...skipPastSlots(user) })) ?? user;
+      const { line, notes } = await scheduleSummary(updated);
+      await respond(responseUrl, {
+        blocks: [
+          section(`🌏 시간대를 *${formatTimezone(tz)}* (${tz})로 맞췄어요.\n⏰ 알림: ${line}`),
+          ...notes.map(context),
+        ],
+      });
+      return;
+    }
+
+    case "schedule": {
+      const current = resolveSchedule(user).schedule;
+      const schedule = applyScheduleUpdate(current, cmd.update);
+      const updated =
+        (await updateUser(userId, {
+          schedule,
+          paused: false,
+          // Clear legacy fields so they can't shadow the new schedule
+          reminderHours: undefined,
+          reminderInterval: undefined,
+          // The first delivery is the "다음 알림" we report, not a catch-up of an earlier slot
+          ...skipPastSlots(user),
+        })) ?? user;
+      const { line, notes } = await scheduleSummary(updated);
+      await respond(responseUrl, { blocks: [section(`✓ 알림 주기를 바꿨어요: ${line}`), ...notes.map(context)] });
+      return;
+    }
+
+    case "error":
+      await respond(responseUrl, {
+        text: `${cmd.message}\n\n예시: \`/nudge 매일 9시\`, \`/nudge 매시간\`, \`/nudge 2시간마다\`, \`/nudge off\`\n전체 사용법은 \`/nudge help\`로 볼 수 있어요.`,
+      });
+      return;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -336,7 +293,12 @@ export async function POST(req: NextRequest) {
   const text = params.get("text") || "";
 
   if (command === "/nudge" && userId && responseUrl) {
-    waitUntil(handleNudgeCommand(responseUrl, userId, text));
+    waitUntil(
+      handleNudgeCommand(responseUrl, userId, text).catch(async (err) => {
+        console.error("/nudge failed:", err);
+        await respond(responseUrl, { text: "😵 처리 중에 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요." }).catch(() => {});
+      })
+    );
     return new NextResponse(null, { status: 200 });
   }
 

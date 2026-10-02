@@ -1,152 +1,79 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
-import { verifySlackRequest, createSlackClient, getThreadLink, getTeamUrl, escapeSlackText } from "@/lib/slack";
-import { getFollowUp, getUserFollowUps, updateFollowUp, removeFollowUp, FollowUp } from "@/lib/redis";
-import { getUser, updateUser } from "@/lib/db";
+import { createSlackClient, verifySlackRequest } from "@/lib/slack";
+import { getFollowUp, itemId, markSeen, removeFollowUp, type FollowUpKind } from "@/lib/redis";
+import { getUser } from "@/lib/db";
+import { buildDigestBlocks, digestFallbackText, loadVisible } from "@/lib/digest";
+import { teamUrlFor } from "@/lib/tick";
 
-// Build follow-up list blocks from provided data (no extra Redis calls)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildFollowUpBlocks(followUps: FollowUp[], teamUrl: string): any[] {
-  if (followUps.length === 0) {
-    return [
-      { type: "section", text: { type: "mrkdwn", text: "*All caught up!* No pending follow-ups." } },
-    ];
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const blocks: any[] = [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*You have ${followUps.length} pending follow-up${followUps.length > 1 ? "s" : ""}:*`,
-      },
-    },
-  ];
-
-  followUps.forEach((f, i) => {
-    const link = getThreadLink(teamUrl, f.channel, f.threadTs, f.parentThreadTs);
-    const hoursAgo = Math.round((Date.now() - f.createdAt) / (1000 * 60 * 60));
-    // Use cached summary, or truncate raw message as fallback
-    const displayText = f.summary || (
-      f.originalMessage.length > 50
-        ? f.originalMessage.slice(0, 50) + "..."
-        : f.originalMessage
-    );
-    const preview = escapeSlackText(displayText);
-
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `${i + 1}. <${link}|${preview}> _(${hoursAgo}h ago)_`,
-      },
-      accessory: {
-        type: "button",
-        text: { type: "plain_text", text: "Dismiss", emoji: true },
-        action_id: `dismiss_followup_${i}`,
-        value: JSON.stringify({ userId: f.userId, channel: f.channel, threadTs: f.threadTs }),
-      },
-    });
-  });
-
-  return blocks;
+interface DismissValue {
+  k?: FollowUpKind;
+  c?: string;
+  t?: string[];
+  // Buttons rendered before incoming tracking existed
+  userId?: string;
+  channel?: string;
+  threadTs?: string;
 }
 
-// Resolve team URL: use cached value on user record, or fetch and cache
-async function resolveTeamUrl(userToken: string, userId: string, cachedUrl?: string): Promise<string> {
-  if (cachedUrl) return cachedUrl;
-  const client = createSlackClient(userToken);
-  const url = await getTeamUrl(client);
-  // Cache on user record for next time
-  updateUser(userId, { teamUrl: url } as any);
-  return url;
+interface BlockActionsPayload {
+  user?: { id?: string };
+  actions?: { action_id?: string; value?: string }[];
+  container?: { is_ephemeral?: boolean };
+  response_url?: string;
+  channel?: { id?: string };
+  message?: { ts?: string; blocks?: { type?: string }[] };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function handleInteraction(payload: any) {
+async function handleInteraction(payload: BlockActionsPayload) {
   const action = payload.actions?.[0];
-  if (!action) return;
+  const userId = payload.user?.id;
+  if (!action?.action_id?.startsWith("dismiss_") || !userId) return;
 
-  const actionValue = JSON.parse(action.value || "{}");
-  const { userId, channel, threadTs } = actionValue;
+  let value: DismissValue;
+  try {
+    value = JSON.parse(action.value || "{}");
+  } catch {
+    return;
+  }
+  const kind: FollowUpKind = value.k === "incoming" ? "incoming" : "outgoing";
+  const channel = value.c ?? value.channel;
+  const timestamps = value.t ?? (value.threadTs ? [value.threadTs] : []);
+  if (!channel || timestamps.length === 0) return;
 
-  if (!userId || !channel || !threadTs) return;
-
-  // Phase 1: parallel — get user + check existence
-  const [user, existing] = await Promise.all([
-    getUser(userId),
-    getFollowUp(userId, channel, threadTs),
-  ]);
-
+  const user = await getUser(userId);
   if (!user) return;
 
-  if (action.action_id === "followup_bumped") {
-    await updateFollowUp(userId, channel, threadTs, {
-      lastActivityAt: Date.now(),
-      lastRemindedAt: Date.now(),
+  // Remove the whole group and remember it so the next poll doesn't bring it back. Items
+  // already resolved (or a retried click) skip the writes but still refresh the message,
+  // so a stale digest row never looks like a broken button.
+  const existing = await Promise.all(timestamps.map((ts) => getFollowUp(kind, userId, channel, ts)));
+  await Promise.all(
+    timestamps.map(async (ts, i) => {
+      if (!existing[i]) return;
+      await removeFollowUp(kind, userId, channel, ts);
+      await markSeen(userId, itemId(kind, channel, ts), existing[i]!.createdAt);
+    })
+  );
+
+  const [visible, teamUrl] = await Promise.all([loadVisible(user), teamUrlFor(user)]);
+  // The /nudge list view shows more rows than the scheduled digest
+  const isEphemeral = payload.container?.is_ephemeral === true;
+  const blocks = buildDigestBlocks(visible, teamUrl, { maxPerSection: isEphemeral ? 20 : 10, isList: isEphemeral });
+
+  if (isEphemeral && payload.response_url) {
+    await fetch(payload.response_url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ replace_original: true, blocks, text: digestFallbackText(visible) }),
     });
-
-    const slackBot = createSlackClient(user.botToken);
-    if (payload.channel?.id && payload.message?.ts) {
-      await slackBot.chat.update({
-        channel: payload.channel.id,
-        ts: payload.message.ts,
-        text: "Got it - I'll remind you again in 24h if still unresolved.",
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: "✓ Got it - I'll remind you again in 24h if still unresolved." } },
-        ],
-      });
-    }
-  } else if (action.action_id === "followup_resolved") {
-    await removeFollowUp(userId, channel, threadTs);
-
-    const slackBot = createSlackClient(user.botToken);
-    if (payload.channel?.id && payload.message?.ts) {
-      await slackBot.chat.update({
-        channel: payload.channel.id,
-        ts: payload.message.ts,
-        text: "Marked as resolved.",
-        blocks: [
-          { type: "section", text: { type: "mrkdwn", text: "✓ Marked as resolved." } },
-        ],
-      });
-    }
-  } else if (action.action_id.startsWith("dismiss_followup_")) {
-    // Retry guard
-    if (!existing) return;
-
-    // Phase 2: parallel — remove from Redis + resolve team URL
-    const [, teamUrl] = await Promise.all([
-      removeFollowUp(userId, channel, threadTs),
-      resolveTeamUrl(user.userToken, userId, (user as any).teamUrl),
-    ]);
-
-    // Phase 3: get remaining follow-ups (must be after remove)
-    const allFollowUps = await getUserFollowUps(userId);
-    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const remainingFollowUps = allFollowUps
-      .filter(f => f.createdAt < twentyFourHoursAgo)
-      .sort((a, b) => a.createdAt - b.createdAt);
-
-    const blocks = buildFollowUpBlocks(remainingFollowUps, teamUrl);
-    const isEphemeral = payload.container?.is_ephemeral === true;
-
-    if (isEphemeral && payload.response_url) {
-      await fetch(payload.response_url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ replace_original: true, blocks }),
-      });
-    } else if (payload.channel?.id && payload.message?.ts) {
-      const slackBot = createSlackClient(user.botToken);
-      await slackBot.chat.update({
-        channel: payload.channel.id,
-        ts: payload.message.ts,
-        text: remainingFollowUps.length > 0 ? `${remainingFollowUps.length} pending follow-ups` : "All caught up!",
-        blocks,
-      });
-    }
+  } else if (payload.channel?.id && payload.message?.ts) {
+    await createSlackClient(user.botToken).chat.update({
+      channel: payload.channel.id,
+      ts: payload.message.ts,
+      text: digestFallbackText(visible),
+      blocks,
+    });
   }
 }
 
@@ -160,10 +87,15 @@ export async function POST(req: NextRequest) {
   }
 
   const params = new URLSearchParams(body);
-  const payload = JSON.parse(params.get("payload") || "{}");
+  let payload: { type?: string } & BlockActionsPayload;
+  try {
+    payload = JSON.parse(params.get("payload") || "{}");
+  } catch {
+    return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+  }
 
   if (payload.type === "block_actions") {
-    waitUntil(handleInteraction(payload));
+    waitUntil(handleInteraction(payload).catch((err) => console.error("interaction failed:", err)));
   }
 
   return NextResponse.json({ ok: true });

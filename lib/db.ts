@@ -1,4 +1,5 @@
 import { redis } from "./redis";
+import type { Schedule } from "./schedule";
 
 export interface NudgeUser {
   slackUserId: string;
@@ -6,23 +7,41 @@ export interface NudgeUser {
   botToken: string;
   userToken: string;
   installedAt: number;
-  // Schedule preferences
-  reminderHours?: number[];      // Specific hours in UTC (e.g., [23] for 8am KST)
-  reminderInterval?: number;     // Interval in hours (e.g., 1 = hourly, 2 = every 2 hours)
-  timezone?: string;
-}
+  teamUrl?: string;
+  botDmChannel?: string;         // the user's DM with Nudge (never tracked)
 
-// 8am KST = 23 UTC. Must match the send-reminders cron hour in vercel.json
-// (Vercel Hobby only allows one cron run per day).
-export const DEFAULT_REMINDER_HOURS = [23];
+  // Preferences
+  schedule?: Schedule;
+  paused?: boolean;
+  tz?: string;                   // IANA timezone, e.g. "Asia/Seoul"
+  trackIncoming?: boolean;       // default on
+  trackOutgoing?: boolean;       // default on
+
+  // Delivery state
+  lastSlot?: number;             // epoch hour of the last schedule slot handled
+  lastSentDate?: string;         // local YYYY-MM-DD of the last digest actually posted
+  lastDigestIds?: string[];      // items in the last digest (to detect new ones)
+  lastPolledAt?: number;
+  // Where each search left off: oldest-first results, so earlier pages never shift
+  searchCursors?: Partial<Record<"outgoing" | "mentions" | "with", { after: string; page: number }>>;
+
+  // Legacy schedule fields (pre-v2); read by resolveSchedule()
+  reminderHours?: number[];      // UTC hours
+  reminderInterval?: number;
+  timezone?: string;             // "KST" | "PT"
+}
 
 const USERS_KEY = "nudge:users";
 const USER_PREFIX = "nudge:user:";
 
-export async function saveUser(user: NudgeUser): Promise<void> {
+// Preferences survive a reinstall: only credentials are replaced.
+export async function saveUser(user: NudgeUser): Promise<NudgeUser> {
   const key = `${USER_PREFIX}${user.slackUserId}`;
-  await redis.set(key, user);
+  const existing = await redis.get<NudgeUser>(key);
+  const merged = existing ? { ...existing, ...user } : user;
+  await redis.set(key, merged);
   await redis.sadd(USERS_KEY, user.slackUserId);
+  return merged;
 }
 
 export async function getUser(slackUserId: string): Promise<NudgeUser | null> {
@@ -34,10 +53,7 @@ export async function getAllUsers(): Promise<NudgeUser[]> {
   const userIds = await redis.smembers(USERS_KEY);
   if (userIds.length === 0) return [];
 
-  const users = await Promise.all(
-    userIds.map((id) => getUser(id as string))
-  );
-
+  const users = await redis.mget<(NudgeUser | null)[]>(...userIds.map((id) => `${USER_PREFIX}${id}`));
   return users.filter((u): u is NudgeUser => u !== null);
 }
 
@@ -50,10 +66,12 @@ export async function removeUser(slackUserId: string): Promise<void> {
 export async function updateUser(
   slackUserId: string,
   updates: Partial<NudgeUser>
-): Promise<void> {
+): Promise<NudgeUser | null> {
   const existing = await getUser(slackUserId);
-  if (!existing) return;
+  if (!existing) return null;
 
   const key = `${USER_PREFIX}${slackUserId}`;
-  await redis.set(key, { ...existing, ...updates });
+  const merged = { ...existing, ...updates };
+  await redis.set(key, merged);
+  return merged;
 }

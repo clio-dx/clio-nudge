@@ -1,0 +1,35 @@
+# Hourly trigger for Nudge. Vercel Hobby only allows one cron run per day, so this
+# workflow calls /api/cron/tick every hour to make hourly / custom-time reminders work.
+#
+# No secrets needed: the job authenticates with a short-lived GitHub OIDC token that the
+# app verifies (repository + main branch + this workflow file). Calling the endpoint more
+# often than needed is harmless — each user's reminder slot is delivered at most once.
+name: Nudge hourly tick
+
+on:
+  schedule:
+    # GitHub may delay scheduled runs; the app catches up on slots up to 2 hours late.
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+
+concurrency:
+  group: nudge-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      APP_URL: ${{ vars.NUDGE_APP_URL || 'https://clio-nudge.vercel.app' }}
+    steps:
+      - name: Trigger tick
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=clio-nudge-tick" | jq -r .value)
+          curl -fsS --max-time 310 -H "Authorization: Bearer $TOKEN" "$APP_URL/api/cron/tick" \
+            | jq -c '{ok, source, slot, usersTotal, usersDue, usersNotified}'

@@ -6,6 +6,20 @@ export function createSlackClient(token: string): WebClient {
   return new WebClient(token);
 }
 
+// For cron work (polling, digests): bounded request time and retries, so a rate-limited or
+// hung call can't hold a run for the client's default ~30 minutes of retries.
+export function createBoundedClient(token: string): WebClient {
+  return new WebClient(token, {
+    timeout: 20_000,
+    retryConfig: { retries: 2, maxRetryTime: 45_000 },
+  });
+}
+
+// Slack platform error code ("thread_not_found", "channel_not_found", ...) if any
+export function slackErrorCode(err: unknown): string | undefined {
+  return (err as { data?: { error?: string } })?.data?.error;
+}
+
 export function verifySlackRequest(
   signature: string | null,
   timestamp: string | null,
@@ -23,17 +37,16 @@ export function verifySlackRequest(
     "v0=" +
     crypto.createHmac("sha256", signingSecret).update(sigBaseString).digest("hex");
 
-  return crypto.timingSafeEqual(
-    Buffer.from(mySignature),
-    Buffer.from(signature)
-  );
+  const a = Buffer.from(mySignature);
+  const b = Buffer.from(signature);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 // Cache workspace URLs so we only call auth.test once per token
 const teamUrlCache = new Map<string, string>();
 
 export async function getTeamUrl(client: WebClient): Promise<string> {
-  const token = (client as any).token as string;
+  const token = client.token;
   if (token && teamUrlCache.has(token)) {
     return teamUrlCache.get(token)!;
   }
@@ -61,33 +74,68 @@ export function getThreadLink(teamUrl: string, channel: string, messageTs: strin
   return `${teamUrl}/archives/${channel}/p${linkTs}`;
 }
 
-// Resolve a channel ID to a short label: first name for DMs, #channel for channels
-export async function getConversationLabel(client: WebClient, channel: string): Promise<string> {
+interface ConversationInfo {
+  is_im?: boolean;
+  is_mpim?: boolean;
+  user?: string;
+  name?: string;
+  name_normalized?: string;
+}
+
+async function conversationInfo(client: WebClient, channel: string): Promise<ConversationInfo | null> {
   try {
     const info = await client.conversations.info({ channel });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ch = info.channel as any;
-
-    if (ch?.is_im) {
-      try {
-        const userInfo = await client.users.info({ user: ch.user });
-        const fullName = userInfo.user?.profile?.display_name || userInfo.user?.real_name || userInfo.user?.name || "";
-        // Just the first name, lowercase
-        return fullName.split(" ")[0].toLowerCase() || "DM";
-      } catch {
-        return "DM";
-      }
-    }
-
-    if (ch?.is_mpim) {
-      return "group DM";
-    }
-
-    const name = ch?.name_normalized || ch?.name;
-    return name ? `#${name}` : "channel";
+    return (info.channel as ConversationInfo) ?? null;
   } catch {
-    return "thread";
+    return null;
   }
+}
+
+// Short display name for a user (display name → real name → handle)
+export async function getUserName(client: WebClient, userId: string): Promise<string> {
+  try {
+    const userInfo = await client.users.info({ user: userId });
+    const u = userInfo.user;
+    return u?.profile?.display_name || u?.real_name || u?.name || "";
+  } catch {
+    return "";
+  }
+}
+
+// IANA timezone from the user's Slack profile (users:read)
+export async function getUserTimezone(client: WebClient, userId: string): Promise<string | null> {
+  try {
+    const userInfo = await client.users.info({ user: userId });
+    return userInfo.user?.tz || null;
+  } catch {
+    return null;
+  }
+}
+
+// Resolve a channel ID to a short label: name for DMs, #channel for channels
+export async function getConversationLabel(client: WebClient, channel: string): Promise<string> {
+  const ch = await conversationInfo(client, channel);
+  if (!ch) return "thread";
+
+  if (ch.is_im) {
+    if (!ch.user) return "DM";
+    const name = await getUserName(client, ch.user);
+    // First word only keeps labels short ("Kim Minji" → "Kim"; Korean names stay whole)
+    return name.split(" ")[0] || "DM";
+  }
+
+  if (ch.is_mpim) return "그룹 DM";
+
+  const name = ch.name_normalized || ch.name;
+  return name ? `#${name}` : "channel";
+}
+
+// Check if a channel is a DM or MPIM (group DM)
+export async function isDMOrMPIM(client: WebClient, channel: string): Promise<boolean> {
+  // D = direct message
+  if (channel.startsWith("D")) return true;
+  const ch = await conversationInfo(client, channel);
+  return ch?.is_mpim === true || ch?.is_im === true;
 }
 
 export function escapeSlackText(text: string): string {

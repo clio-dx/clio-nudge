@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --import ./tests/register.mjs --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-isolation=none \"tests/*.test.ts\""
   },
   "dependencies": {
     "@ai-sdk/gateway": "^3.0.28",
