@@ -18,7 +18,7 @@ import {
   resolveTimezone,
   worksWithDailyCronOnly,
 } from "@/lib/schedule";
-import { helpText, hourlyInactiveWarning, INTERVAL_NOTE, SECTION_NAMES } from "@/lib/messages";
+import { DM_PREFIX, helpText, hourlyInactiveWarning, INTERVAL_NOTE, SECTION_NAMES } from "@/lib/messages";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Block = any;
@@ -76,11 +76,9 @@ async function scheduleSummary(user: NudgeUser, p: string): Promise<{ line: stri
 
 function quickCommands(p: string): string {
   const c = (s: string) => `\`${p}${s}\``;
-  const tip =
-    p === ""
-      ? "_이 창에는 `/nudge` 없이 입력하면 돼요._"
-      : "_Nudge와의 DM 창에서는 `/nudge` 없이 `설정`, `목록`처럼 입력해도 돼요._";
-  return `${c("목록")} 질문 보기 · ${c("새로고침")} 지금 확인 · ${c("9시")} · ${c("매시간")} · ${c("끄기")} · ${c("도움말")} 전체 사용법\n${tip}`;
+  // In the Nudge DM the commands above are already written without "/nudge"
+  const tip = p === DM_PREFIX ? "" : "\n_Nudge와의 DM 창에서는 `/nudge` 없이 `설정`, `목록`처럼 입력해도 돼요._";
+  return `${c("목록")} 질문 보기 · ${c("새로고침")} 지금 확인 · ${c("9시")} · ${c("매시간")} · ${c("끄기")} · ${c("도움말")} 전체 사용법${tip}`;
 }
 
 async function statusReply(user: NudgeUser, p: string): Promise<Reply> {
@@ -110,8 +108,8 @@ async function statusReply(user: NudgeUser, p: string): Promise<Reply> {
 async function listReply(user: NudgeUser, p: string, footer?: string): Promise<Reply> {
   const [visible, teamUrl] = await Promise.all([loadVisible(user), teamUrlFor(user)]);
   const lastCheck = user.lastPolledAt
-    ? `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)} · 다시 확인하려면 \`${p}새로고침\``
-    : `아직 Slack을 확인하기 전이에요 · \`${p}새로고침\`으로 지금 확인해 보세요`;
+    ? `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)}`
+    : "아직 Slack을 확인하기 전이에요";
   return {
     text: "Nudge 질문 목록",
     blocks: buildDigestBlocks(visible, teamUrl, { maxPerSection: 20, footer: footer ?? lastCheck, isList: true, prefix: p }),

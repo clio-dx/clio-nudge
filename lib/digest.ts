@@ -188,7 +188,7 @@ export function buildDigestBlocks(
     elements: [
       {
         type: "mrkdwn",
-        text: opts.footer ?? "질문을 누르면 원래 메시지로 이동해요. 답장했거나 신경 쓰지 않아도 되면 *완료*를 눌러 주세요.",
+        text: opts.footer ?? "답장했거나 신경 쓰지 않아도 되면 *완료*를 눌러 주세요.",
       },
     ],
   });

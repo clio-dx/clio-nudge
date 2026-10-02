@@ -75,7 +75,7 @@ export function SlackDigestMock() {
           </div>
 
           <p className="mt-3 text-[13px] text-zinc-500">
-            질문을 누르면 원래 메시지로 이동해요. 답장했거나 신경 쓰지 않아도 되면 <b>완료</b>를 눌러 주세요.
+            답장했거나 신경 쓰지 않아도 되면 <b>완료</b>를 눌러 주세요.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {["⚙️ 내 설정", "🔄 지금 다시 확인", "📖 사용법"].map((label) => (
@@ -95,7 +95,7 @@ export function SlackDigestMock() {
 }
 
 export const DIGEST_CALLOUTS = [
-  "질문을 누르면 원래 메시지(DM·스레드)로 바로 이동해요. 찾으러 다닐 필요가 없어요.",
-  "답장할 필요가 없으면 완료를 눌러 정리해요. 같은 DM에서 연달아 온 질문은 한 줄로 묶이고 함께 지워져요.",
+  "질문을 누르면 원래 메시지(DM·스레드)로 바로 이동해요.",
+  "답장할 필요가 없으면 완료를 눌러 정리해요. 같은 DM·스레드에서 연달아 온 질문은 한 줄로 묶이고 함께 지워져요.",
   "버튼 한 번으로 내 설정을 보거나, 지금 바로 다시 확인하거나, 사용법을 볼 수 있어요.",
 ];

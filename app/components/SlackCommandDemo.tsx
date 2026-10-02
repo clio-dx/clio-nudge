@@ -81,7 +81,6 @@ export function SlackCommandDemo({ command }: { command: string }) {
       {/* Channel header */}
       <div className="flex items-center gap-2 border-b border-zinc-200 px-4 py-2.5">
         <span className="font-bold"># 일반</span>
-        <span className="text-xs text-zinc-500">아무 채널이나 DM에서 입력해도 돼요</span>
       </div>
 
       {/* Messages */}
@@ -120,7 +119,7 @@ export function SlackCommandDemo({ command }: { command: string }) {
                 <b>/nudge</b>{" "}
                 <span className="opacity-80">설정 | 목록 | 새로고침 | 9시 | 매시간 | 2시간마다 | 끄기 | 도움말</span>
               </p>
-              <p className="text-xs opacity-80">놓친 질문 확인 · 알림 시간 설정 (도움말로 전체 사용법)</p>
+              <p className="text-xs opacity-80">놓친 질문 확인 · 알림 시간 설정</p>
             </div>
           </div>
         )}

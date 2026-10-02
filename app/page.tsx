@@ -13,23 +13,22 @@ const SLACK_LOGO = (
 );
 
 const SCHEDULE_COMMANDS: [string, string][] = [
-  ["/nudge 9시  ·  /nudge 9am", "오전 9시에 하루 한 번"],
+  ["/nudge 9시", "오전 9시에 하루 한 번"],
   ["/nudge 9시 13시 18시", "하루에 여러 번, 지정한 시각마다"],
-  ["/nudge 매시간  ·  /nudge hourly", "근무시간(9~18시) 동안 매시간"],
+  ["/nudge 매시간", "근무시간(9~18시) 동안 매시간"],
   ["/nudge 2시간마다", "근무시간 동안 2시간 간격"],
   ["/nudge 매시간 10-19", "매시간 받을 시간대를 직접 지정"],
   ["/nudge 평일", "주말 제외 (기본값)"],
-  ["/nudge 매일  ·  /nudge 주말포함", "주말에도 받기 — /nudge 매일 9시처럼 함께 써도 돼요"],
+  ["/nudge 매일", "주말에도 받기"],
   ["/nudge 끄기  ·  /nudge 켜기", "알림 끄기 / 다시 켜기"],
 ];
 
 const OTHER_COMMANDS: [string, string][] = [
   ["/nudge 설정", "내 알림 설정과 다음 알림 시간 보기"],
-  ["/nudge 목록", "지금 확인할 질문 보기 (종류별 최대 20개)"],
+  ["/nudge 목록", "지금 확인할 질문 보기"],
   ["/nudge 새로고침", "Slack을 지금 바로 다시 확인하고 목록 보기"],
   ["/nudge 받은질문 끄기  ·  /nudge 받은질문 켜기", `${SECTION_NAMES.incoming} 알림 끄기 / 다시 켜기`],
   ["/nudge 보낸질문 끄기  ·  /nudge 보낸질문 켜기", `${SECTION_NAMES.outgoing} 알림 끄기 / 다시 켜기`],
-  ["/nudge tz Asia/Seoul  ·  /nudge tz auto", "시간대 직접 정하기 / Slack 프로필과 다시 맞추기"],
   ["/nudge 도움말", "Slack 안에서 전체 사용법 보기"],
 ];
 
@@ -118,9 +117,6 @@ export default async function Home({
         </header>
 
         <Section title="이런 메시지가 와요">
-          <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            여기저기 흩어진 DM, 스레드, 멘션을 뒤질 필요 없이, 정해 둔 시간에 Nudge DM 하나로 모아서 보내드려요.
-          </p>
           <SlackDigestMock />
           <ol className="flex flex-col gap-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
             {DIGEST_CALLOUTS.map((text, i) => (
@@ -132,20 +128,6 @@ export default async function Home({
               </li>
             ))}
           </ol>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {[
-              ["🧠", "알아서 지워져요", "답장하면 AI가 판단해서 다음 확인 때 목록에서 빼요. “확인해볼게요”는 아직 안 끝난 걸로 봐요."],
-              ["🔕", "조용해요", "확인할 질문이 없으면 아무 메시지도 오지 않고, 매시간 모드에서도 새 질문이 생겼을 때만 와요."],
-              ["🔒", "나만 봐요", "알림과 명령어 답장은 나에게만 보여요. 상대방에게는 아무것도 가지 않아요."],
-            ].map(([emoji, title, body]) => (
-              <div key={title} className="rounded-lg bg-zinc-50 p-4 dark:bg-zinc-900">
-                <p className="font-semibold text-black dark:text-zinc-50">
-                  <span aria-hidden>{emoji}</span> {title}
-                </p>
-                <p className="mt-1 text-xs leading-5 text-zinc-600 dark:text-zinc-400">{body}</p>
-              </div>
-            ))}
-          </div>
         </Section>
 
         <Section title="무엇을 알려주나요?">
@@ -160,28 +142,26 @@ export default async function Home({
             <div className="rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
               <p className="font-semibold text-black dark:text-zinc-50">{SECTION_NAMES.outgoing}</p>
               <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-                내가 채널·DM·스레드에서 물어봤는데 아직 답을 못 받은 질문이에요. 상대에게 하루쯤 여유를 주고, 24시간이
-                지나도 답이 없으면 알려드려요.
+                내가 채널·DM·스레드에서 물어봤는데 아직 답을 못 받은 질문이에요. 24시간이 지나도 답이 없으면
+                알려드려요.
               </p>
             </div>
           </div>
           <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            알림에서 질문을 누르면 원래 메시지로 바로 이동하고, <b>완료</b>를 누르면 목록에서 지워져요. 확인할 질문이
-            없으면 아무 메시지도 보내지 않아요.
+            확인할 질문이 없으면 아무 메시지도 보내지 않아요.
           </p>
         </Section>
 
         <Section title="알림은 언제 받나요?">
           <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            기본은 <b>평일 오전 8시에 하루 한 번</b>(Slack 프로필 시간대 기준)이에요. 일하는 방식에 맞는 추천 설정을
-            골라 Slack에 붙여넣기만 하면 바로 바뀌어요.
+            기본은 <b>평일 오전 8시에 하루 한 번</b>(Slack 프로필 시간대 기준)이에요.
           </p>
           <h3 className="font-semibold text-black dark:text-zinc-50">역할별 추천 설정</h3>
           <ScheduleGuide />
           <h3 className="mt-4 font-semibold text-black dark:text-zinc-50">직접 정하기</h3>
           <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
             <code>/nudge</code> 뒤에 원하는 시간을 적으면 돼요. <b>Nudge DM 창에서는 <code>/nudge</code> 없이</b>{" "}
-            <code>9시</code>, <code>매시간</code>처럼 바로 입력해도 돼요. 한국어·영어 둘 다 알아들어요.
+            <code>9시</code>, <code>매시간</code>처럼 바로 입력해도 돼요.
           </p>
           <CommandTable rows={SCHEDULE_COMMANDS} />
           <ul className="list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
@@ -190,11 +170,6 @@ export default async function Home({
             </li>
             <li>
               <b>매시간/간격</b>: 하루 첫 알림에는 전체 목록을 보내고, 그 뒤로는 <b>새 질문이 생겼을 때만</b> 보내요.
-              같은 목록이 매시간 반복되지 않아요.
-            </li>
-            <li>
-              오전/오후 없이 <code>5시</code>, <code>1-5</code>처럼 쓰면 1~6시는 오후, 7~11시는 오전으로 알아들어요.{" "}
-              <code>17:00</code>, <code>오전 5시</code>처럼 쓰면 그대로예요.
             </li>
           </ul>
         </Section>
@@ -202,7 +177,7 @@ export default async function Home({
         <Section title="그 밖의 명령어">
           <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
             💬 <b>Nudge DM 창에서는 앞의 <code>/nudge</code>를 빼고</b> <code>설정</code>, <code>목록</code>처럼 입력하면
-            돼요. 알림 아래의 <b>⚙️ 내 설정 · 🔄 지금 다시 확인 · 📖 사용법</b> 버튼을 눌러도 돼요.
+            돼요.
           </p>
           <CommandTable rows={OTHER_COMMANDS} />
         </Section>
@@ -210,22 +185,17 @@ export default async function Home({
         <Section title="자동으로 정리되는 경우">
           <ul className="list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
             <li>
-              <b>{SECTION_NAMES.incoming}</b>: 내가 답장하거나 파일을 보냈을 때, 질문에 👍·✅·넵 같은 리액션을 달았을
-              때, 나를 cc·참조로만 넣은 질문에 다른 사람이 답했을 때, 질문한 사람이 &ldquo;해결됐어요&rdquo;라고 했을 때,
-              14일이 지났을 때
+              <b>{SECTION_NAMES.incoming}</b>: 내가 답장하거나 질문에 👍·✅·넵 같은 리액션을 달았을 때, 14일이 지났을 때
             </li>
             <li>
-              <b>{SECTION_NAMES.outgoing}</b>: 상대가 답하거나 파일을 보냈을 때, 상대가 내 메시지에 리액션을 달았을
-              때, 봇이 답했을 때, 내가 &ldquo;해결했어요&rdquo;라고 남겼을 때
+              <b>{SECTION_NAMES.outgoing}</b>: 상대가 답하거나 내 메시지에 리액션을 달았을 때
             </li>
-            <li>원래 메시지를 지웠거나 내가 채널에서 나갔을 때</li>
             <li>
               &ldquo;확인해볼게요&rdquo;, &ldquo;알아볼게요&rdquo;처럼 미루는 답이나 👀·⏳·🤔(보는 중) 리액션은 아직
               답으로 보지 않아요.
             </li>
             <li>
-              <b>완료</b> 버튼으로 지운 질문은 다시 나오지 않아요. 같은 DM·스레드에서 연달아 온 질문은 한 줄로 묶이고
-              함께 지워져요.
+              <b>완료</b> 버튼으로 지운 질문은 다시 나오지 않아요.
             </li>
           </ul>
         </Section>
@@ -251,20 +221,12 @@ export default async function Home({
             <div>
               <p className="font-medium text-black dark:text-zinc-50">내 메시지를 어디에 저장하나요?</p>
               <p>
-                아직 답이 없는 질문의 본문과 짧은 요약만 Nudge 서버(Upstash Redis)에 저장하고, 답이 오거나 완료하면
-                지워요. 답변 판단과 요약에는 Vercel AI Gateway를 써요.
-              </p>
-            </div>
-            <div>
-              <p className="font-medium text-black dark:text-zinc-50">지금 바로 확인하고 싶어요.</p>
-              <p>
-                알림 아래 <b>🔄 지금 다시 확인</b> 버튼을 누르거나, Nudge DM 창에 <code>새로고침</code>(다른 채널에서는{" "}
-                <code>/nudge 새로고침</code>)을 입력하면 그 자리에서 Slack을 다시 확인하고 목록을 보여줘요.
+                아직 답이 없는 질문의 본문과 짧은 요약만 Nudge 서버에 저장하고, 답이 오거나 완료하면 지워요.
+                답변 판단과 요약에는 AI를 써요.
               </p>
             </div>
           </div>
         </Section>
-
       </main>
     </div>
   );

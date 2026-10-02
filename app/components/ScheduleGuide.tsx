@@ -9,7 +9,7 @@ const STEPS = [
   { title: "복사", body: "마음에 드는 추천 설정의 복사 버튼을 눌러요." },
   {
     title: "Slack 입력창에 붙여넣기",
-    body: "Nudge DM 창이나 아무 채널의 메시지 입력란에 붙여넣어요(Ctrl+V / ⌘V). 입력창 위에 /nudge 안내가 뜨면 제대로 된 거예요.",
+    body: "Nudge DM 창이나 아무 채널의 메시지 입력란에 붙여넣어요. 입력창 위에 /nudge 안내가 뜨면 제대로 된 거예요.",
   },
   {
     title: "Enter",
@@ -49,7 +49,7 @@ export function ScheduleGuide() {
                   {p.emoji}
                 </span>
                 <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                  {p.role} 추천
+                  {p.role}
                 </span>
               </div>
               <div>
@@ -83,7 +83,7 @@ export function ScheduleGuide() {
 
         <SlackCommandDemo key={selected.command} command={selected.command} />
         <p className="text-center text-xs text-zinc-500">
-          ▲ <b>{selected.role}</b> 추천 설정을 적용하는 모습이에요. 위에서 다른 설정을 고르면 시연도 바뀌어요.
+          ▲ <b>{selected.role}</b> 추천 설정을 적용하는 모습이에요.
         </p>
 
         <ul className="list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
@@ -92,8 +92,7 @@ export function ScheduleGuide() {
             안내 없이 Enter를 누르면 일반 메시지로 올라갈 수 있어요.
           </li>
           <li>
-            지금 설정을 확인하려면 <code>/nudge 설정</code>, 기본값(평일 오전 8시)으로 되돌리려면{" "}
-            <code>/nudge 평일 8시</code>를 입력하세요. Nudge DM 창에서는 앞의 <code>/nudge</code>를 빼도 돼요.
+            기본값으로 되돌리려면 <code>/nudge 평일 8시</code>를 입력하세요.
           </li>
         </ul>
       </div>

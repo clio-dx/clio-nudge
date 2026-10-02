@@ -1,4 +1,4 @@
-// Recommended /nudge schedules by role. Shared by the landing page and /nudge help;
+// Recommended /nudge schedules by role, shown on the landing page;
 // tests/pure.test.ts checks every command parses to `schedule`.
 
 export interface Preset {
@@ -27,7 +27,7 @@ export const PRESETS: Preset[] = [
     role: "사원·대리",
     title: "근무시간 매시간, 새 질문만",
     command: "/nudge 매시간 9-18",
-    description: "요청에 빨리 답해야 한다면 근무시간 동안 새 질문이 생길 때만 알려드려요. 같은 목록을 반복해서 보내지 않아요.",
+    description: "요청에 빨리 답해야 한다면 근무시간 동안 새 질문이 생길 때만 알려드려요.",
     schedule: "평일 9시~18시 매시간",
   },
   {
@@ -45,7 +45,7 @@ export const PRESETS: Preset[] = [
     role: "영업·CS",
     title: "주말 포함 2시간마다",
     command: "/nudge 매일 2시간마다 9-21",
-    description: "고객 응대처럼 주말에도 놓치면 안 된다면 주말을 포함해 9시~21시에 2시간 간격으로 새 질문을 알려드려요.",
+    description: "고객 응대처럼 주말에도 놓치면 안 된다면 9시~21시에 2시간 간격으로 새 질문을 알려드려요.",
     schedule: "매일 9시~21시 2시간마다",
   },
 ];
