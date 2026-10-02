@@ -1,3 +1,4 @@
+import { waitUntil } from "@vercel/functions";
 import { getAllUsers, getUser, updateUser, type NudgeUser } from "@/lib/db";
 import { pollUser, type PollStats } from "@/lib/poll";
 import { acquireLock, recentTickHours, recordTick, redis } from "@/lib/redis";
@@ -60,15 +61,15 @@ interface UserResult {
   error?: string;
 }
 
-// Poll, but give up waiting at `untilMs` (the poll keeps running in the background)
+// Poll, but give up waiting at `untilMs`. The poll keeps running in the background, and
+// waitUntil keeps the function alive until it saves its progress.
 async function pollWithin(user: NudgeUser, untilMs: number): Promise<Pick<UserResult, "poll" | "pollTimedOut">> {
-  const stats = await settleBy(
-    pollUser(user, untilMs - 10_000).catch((err) => {
-      console.error(`poll failed for ${user.slackUserId}:`, err);
-      return undefined;
-    }),
-    untilMs
-  );
+  const poll = pollUser(user, untilMs - 10_000).catch((err) => {
+    console.error(`poll failed for ${user.slackUserId}:`, err);
+    return undefined;
+  });
+  waitUntil(poll);
+  const stats = await settleBy(poll, untilMs);
   if (!stats) return { pollTimedOut: true };
   const { errors, ...rest } = stats;
   if (errors.length > 0) console.error(`poll errors for ${user.slackUserId}:`, errors.slice(0, 10));

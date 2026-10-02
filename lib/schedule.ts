@@ -85,8 +85,17 @@ export function resolveSchedule(user: ScheduleFields): { schedule: Schedule; pau
   const toLocal = (utcHour: number) => (((utcHour + offset) % 24) + 24) % 24;
 
   if (user.reminderInterval) {
-    // Old intervals fired when the UTC hour was divisible by N; keep those exact local hours
-    const utcHours = Array.from({ length: 24 }, (_, h) => h).filter((h) => h % user.reminderInterval! === 0);
+    const every = user.reminderInterval;
+    // Old "/nudge hourly" / "every N hours": the new interval mode within work hours, so it
+    // only pings when something new shows up (a 24-slot fixed-time list would resend hourly).
+    if (every < 12) {
+      return {
+        schedule: { kind: "interval", every, start: DEFAULT_WINDOW.start, end: DEFAULT_WINDOW.end, weekdaysOnly: false },
+        paused: user.paused === true,
+      };
+    }
+    // Long intervals fired when the UTC hour was divisible by N; keep those exact local hours
+    const utcHours = Array.from({ length: 24 }, (_, h) => h).filter((h) => h % every === 0);
     return {
       schedule: { kind: "times", hours: uniqueSorted(utcHours.map(toLocal)), weekdaysOnly: false },
       paused: user.paused === true,

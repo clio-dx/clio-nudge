@@ -248,6 +248,10 @@ test("legacy user records", () => {
     kind: "times", hours: [9], weekdaysOnly: false,
   });
   assert.deepEqual(resolveSchedule({ reminderInterval: 12 }).schedule, { kind: "times", hours: [9, 21], weekdaysOnly: false });
+  // old "/nudge hourly" → hourly within work hours, new items only (never a 24-slot resend)
+  assert.deepEqual(resolveSchedule({ reminderInterval: 1, timezone: "KST" }).schedule, {
+    kind: "interval", every: 1, start: 9, end: 18, weekdaysOnly: false,
+  });
   // old "/nudge off" ({reminderHours: []}) can be turned back on
   assert.equal(resolveSchedule({ reminderHours: [], paused: false }).paused, false);
 });

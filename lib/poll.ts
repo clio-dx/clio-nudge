@@ -794,9 +794,12 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
       deadline,
     };
 
+    // Save search progress after each part, so a run cut short still moves forward
+    const saveProgress = () => updateUser(user.slackUserId, { searchCursors: ctx.cursors });
     if (user.trackOutgoing !== false) {
       try {
         await pollOutgoing(ctx);
+        await saveProgress();
       } catch (err) {
         stats.errors.push(`outgoing: ${err}`);
       }
@@ -804,6 +807,7 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
     if (user.trackIncoming !== false) {
       try {
         await pollIncoming(ctx);
+        await saveProgress();
       } catch (err) {
         stats.errors.push(`incoming: ${err}`);
       }
