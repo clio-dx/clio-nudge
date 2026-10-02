@@ -4,8 +4,10 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { resetSlack, workspace, type FakeMessage } from "./mocks/slack-web-api.ts";
 import { resetRedis } from "./mocks/redis.ts";
-import { aiCalls, aiFailures } from "./mocks/ai.ts";
+import { aiCalls, aiFailures, modelsUsed } from "./mocks/ai.ts";
 import { resumeAi } from "../lib/ai.ts";
+import { parseDmText, runCommand } from "../lib/nudge-command.ts";
+import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
 import { pollUser } from "../lib/poll.ts";
 import { runTick } from "../lib/tick.ts";
 import { getUser, saveUser, updateUser, type NudgeUser } from "../lib/db.ts";
@@ -108,6 +110,8 @@ beforeEach(() => {
   resetRedis();
   aiCalls.length = 0;
   aiFailures.rateLimited = 0;
+  aiFailures.paidOnly.clear();
+  modelsUsed.length = 0;
   resumeAi();
   T = {};
   buildWorkspace();
@@ -203,8 +207,9 @@ test("tick sends one digest per slot, records the Nudge DM and never tracks it",
   assert.equal(first.usersNotified, 1);
   assert.equal(workspace.posted.length, 1);
   const text = JSON.stringify(workspace.posted[0].blocks);
-  assert.match(text, /📥 답장이 필요한 질문 · 4/);
-  assert.match(text, /📤 답을 기다리는 내 질문 · 2/);
+  assert.match(text, /📥 내가 답장해야 할 질문 · 4/);
+  assert.match(text, /📤 상대에게 답장 받아야 할 질문 · 2/);
+  assert.match(text, /nudge_settings/, "quick buttons under the digest");
 
   // Vercel Cron + GitHub Actions in the same hour → still one message
   await runTick("test-again");
@@ -351,6 +356,77 @@ test("without AI, list rows show a Korean preview with names instead of raw ment
   const row = (await getUserFollowUps(ME, "outgoing")).find((f) => f.threadTs === q)!;
   assert.match(row.summary!, /^하은 - @박상구\(부장\)_DX팀 님 일정 확인해 주실 수 있나요\?$/);
   assert.equal(row.summaryVersion, 0, "the AI topic is retried later");
+});
+
+test("commands typed in the Nudge DM work without /nudge, and replies show them that way", async () => {
+  const user = await install({ botDmChannel: "DNUDGE" });
+  const sent: { text?: string; blocks?: unknown[] }[] = [];
+  const responder = (prefix: string) => ({
+    prefix,
+    send: async (r: { text?: string; blocks?: unknown[] }) => void sent.push(r),
+    replace: async (r: { text?: string; blocks?: unknown[] }) => void sent.push(r),
+  });
+
+  assert.equal(parseDmText("설정").type, "status");
+  assert.equal(parseDmText("/nudge 목록").type, "list");
+  assert.equal(parseDmText("nudge list").type, "list");
+
+  await runCommand(user, parseDmText("설정"), responder(DM_PREFIX));
+  const dmStatus = JSON.stringify(sent.pop());
+  assert.match(dmStatus, /내 Nudge 설정/);
+  assert.match(dmStatus, /`목록`/);
+  assert.doesNotMatch(dmStatus, /`\/nudge 목록`/, "no /nudge prefix inside the DM");
+
+  await runCommand(user, parseDmText("설정"), responder(SLASH_PREFIX));
+  assert.match(JSON.stringify(sent.pop()), /`\/nudge 목록`/, "slash replies keep the prefix");
+
+  await runCommand(user, parseDmText("매일 9시"), responder(DM_PREFIX));
+  assert.match(JSON.stringify(sent.pop()), /알림 시간을 바꿨어요: \*매일 오전 9시\*/);
+  assert.deepEqual((await getUser(ME))!.schedule, { kind: "times", hours: [9], weekdaysOnly: false });
+
+  await runCommand(user, parseDmText("고마워"), responder(DM_PREFIX));
+  assert.match(JSON.stringify(sent.pop()), /천만에요/, "a thank-you gets a friendly reply, not an error");
+
+  await runCommand(user, parseDmText("아무말대잔치"), responder(DM_PREFIX));
+  const unknown = JSON.stringify(sent.pop());
+  assert.match(unknown, /이해하지 못한 명령이에요/);
+  assert.match(unknown, /`도움말`/, "unknown text points to the help");
+
+  // Pasted from the help (inline code), with punctuation, or with a bot mention
+  assert.equal(parseDmText("`목록`").type, "list");
+  assert.equal(parseDmText("`매일 9시`").type, "schedule");
+  assert.equal(parseDmText("목록.").type, "list");
+  assert.equal(parseDmText("<@UNUDGE> 설정").type, "status");
+  assert.equal(parseDmText("?").type, "help");
+  for (const t of ["넵", "감사합니다!", "ㅇㅋ", ":+1:", "넵 :pray:"]) assert.equal(parseDmText(t).type, "thanks", t);
+});
+
+test("🔄 on a digest keeps the list on screen when a check is already running", async () => {
+  const user = await install({ botDmChannel: "DNUDGE" });
+  await pollUser(user);
+  await redis.set(`nudge:lock:poll:${ME}`, 1, { nx: true, ex: 300 }); // another poll in progress
+  const shown: { text?: string; blocks?: unknown[] }[] = [];
+  const inPlace = {
+    prefix: DM_PREFIX,
+    send: async (r: { text?: string; blocks?: unknown[] }) => void shown.push(r),
+    replace: async (r: { text?: string; blocks?: unknown[] }) => void shown.push(r),
+  };
+  await runCommand((await getUser(ME))!, { type: "refresh" }, inPlace);
+  const last = JSON.stringify(shown.at(-1));
+  assert.match(last, /dismiss_/, "rows and 완료 buttons are still there");
+  assert.match(last, /nudge_refresh/, "quick buttons are still there");
+  assert.match(last, /이미 확인하고 있어요/);
+});
+
+test("a paid-only model on the free plan falls back to the free model instead of failing", async () => {
+  const user = await install();
+  aiFailures.paidOnly.add("anthropic/claude-haiku-4.5"); // the configured default in tests
+  const stats = await pollUser(user);
+  assert.deepEqual(stats.errors, []);
+  assert.ok(modelsUsed.includes("google/gemini-2.5-flash-lite"), "switched to the fallback model");
+  // Calls run 4 at a time, so at most the first parallel batch hits the blocked model
+  assert.ok(modelsUsed.filter((m) => m === "anthropic/claude-haiku-4.5").length <= 4, "the blocked model isn't retried");
+  assert.equal((await getUserFollowUps(ME, "incoming")).length, 5, "detection still works");
 });
 
 test("notes in my self-DM are never tracked", async () => {

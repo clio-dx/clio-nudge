@@ -99,7 +99,7 @@ export function SlackCommandDemo({ command }: { command: string }) {
                 <span className="ml-1.5 text-xs text-zinc-500">{response.time}</span>
               </p>
               <p className="mt-0.5 leading-6">
-                ✓ 알림 주기를 바꿨어요: <b>{response.schedule}</b> (한국 시간)
+                ✓ 알림 시간을 바꿨어요: <b>{response.schedule}</b> (한국 시간)
                 {response.next ? ` · 다음 알림 ${response.next}` : ""}
               </p>
               {response.interval && (
@@ -118,9 +118,9 @@ export function SlackCommandDemo({ command }: { command: string }) {
             <div className="mx-1.5 my-1.5 rounded-md bg-[#1264a3] px-2.5 py-2 text-white">
               <p className="text-sm">
                 <b>/nudge</b>{" "}
-                <span className="opacity-80">list | refresh | 매일 9시 | 매시간 | 2시간마다 | 평일 | off | help</span>
+                <span className="opacity-80">설정 | 목록 | 새로고침 | 9시 | 매시간 | 2시간마다 | 끄기 | 도움말</span>
               </p>
-              <p className="text-xs opacity-80">미답변 질문 확인 · 알림 주기 설정 (help로 전체 사용법)</p>
+              <p className="text-xs opacity-80">놓친 질문 확인 · 알림 시간 설정 (도움말로 전체 사용법)</p>
             </div>
           </div>
         )}

@@ -1,6 +1,7 @@
 import Image from "next/image";
 import { ScheduleGuide } from "./components/ScheduleGuide";
 import { DIGEST_CALLOUTS, SlackDigestMock } from "./components/SlackDigestMock";
+import { SECTION_NAMES } from "@/lib/messages";
 
 const SLACK_LOGO = (
   <svg width="20" height="20" viewBox="0 0 54 54" fill="none" aria-hidden>
@@ -19,17 +20,17 @@ const SCHEDULE_COMMANDS: [string, string][] = [
   ["/nudge 매시간 10-19", "매시간 받을 시간대를 직접 지정"],
   ["/nudge 평일", "주말 제외 (기본값)"],
   ["/nudge 매일  ·  /nudge 주말포함", "주말에도 받기 — /nudge 매일 9시처럼 함께 써도 돼요"],
-  ["/nudge off  ·  /nudge on", "알림 끄기 / 다시 켜기"],
+  ["/nudge 끄기  ·  /nudge 켜기", "알림 끄기 / 다시 켜기"],
 ];
 
 const OTHER_COMMANDS: [string, string][] = [
-  ["/nudge", "내 설정과 다음 알림 시각 보기"],
-  ["/nudge list", "지금 쌓여 있는 항목 보기 (종류별 최대 20줄)"],
-  ["/nudge refresh", "Slack을 지금 바로 다시 확인하고 목록 보기"],
-  ["/nudge 받은질문 끄기 / 켜기", "받은 질문 추적 끄고 켜기"],
-  ["/nudge 보낸질문 끄기 / 켜기", "보낸 질문 추적 끄고 켜기"],
-  ["/nudge tz Asia/Seoul  ·  /nudge tz auto", "시간대 직접 지정 / Slack 프로필과 맞추기"],
-  ["/nudge help", "Slack 안에서 전체 사용법 보기"],
+  ["/nudge 설정", "내 알림 설정과 다음 알림 시간 보기"],
+  ["/nudge 목록", "지금 확인할 질문 보기 (종류별 최대 20개)"],
+  ["/nudge 새로고침", "Slack을 지금 바로 다시 확인하고 목록 보기"],
+  ["/nudge 받은질문 끄기  ·  /nudge 받은질문 켜기", `${SECTION_NAMES.incoming} 알림 끄기 / 다시 켜기`],
+  ["/nudge 보낸질문 끄기  ·  /nudge 보낸질문 켜기", `${SECTION_NAMES.outgoing} 알림 끄기 / 다시 켜기`],
+  ["/nudge tz Asia/Seoul  ·  /nudge tz auto", "시간대 직접 정하기 / Slack 프로필과 다시 맞추기"],
+  ["/nudge 도움말", "Slack 안에서 전체 사용법 보기"],
 ];
 
 function CommandTable({ rows }: { rows: [string, string][] }) {
@@ -81,13 +82,13 @@ export default async function Home({
           {installed ? (
             <div className="flex w-full flex-col items-center gap-3 rounded-lg bg-green-50 p-6 dark:bg-green-900/20">
               <p className="font-medium text-green-700 dark:text-green-400">
-                {installed === "updated" ? "✓ Nudge 연결을 새로 고쳤어요!" : "✓ Nudge가 설치됐어요!"}
+                {installed === "updated" ? "✓ Nudge를 다시 연결했어요!" : "✓ Nudge가 설치됐어요!"}
               </p>
               <p className="text-sm text-green-700 dark:text-green-500">
                 {installed === "updated"
-                  ? "알림 주기와 추적 설정은 그대로 유지했어요. 잠시 뒤 "
+                  ? "알림 시간 등 기존 설정은 그대로예요. 잠시 뒤 "
                   : "Slack DM으로 안내 메시지를 보냈어요. 지난 7일 치 메시지를 확인하는 중이니, 잠시 뒤 "}
-                <code className="rounded bg-green-100 px-1 dark:bg-green-800">/nudge list</code>로 확인해 보세요.
+                Nudge DM 창에 <code className="rounded bg-green-100 px-1 dark:bg-green-800">목록</code>을 입력해 보세요.
               </p>
               <a
                 href={slackUrl}
@@ -134,7 +135,7 @@ export default async function Home({
           <div className="grid gap-3 sm:grid-cols-3">
             {[
               ["🧠", "알아서 지워져요", "답장하면 AI가 판단해서 다음 확인 때 목록에서 빼요. “확인해볼게요”는 아직 안 끝난 걸로 봐요."],
-              ["🔕", "조용해요", "확인할 게 없으면 아무 메시지도 오지 않고, 매시간 모드도 새 항목이 있을 때만 와요."],
+              ["🔕", "조용해요", "확인할 질문이 없으면 아무 메시지도 오지 않고, 매시간 모드에서도 새 질문이 생겼을 때만 와요."],
               ["🔒", "나만 봐요", "알림과 명령어 답장은 나에게만 보여요. 상대방에게는 아무것도 가지 않아요."],
             ].map(([emoji, title, body]) => (
               <div key={title} className="rounded-lg bg-zinc-50 p-4 dark:bg-zinc-900">
@@ -150,23 +151,23 @@ export default async function Home({
         <Section title="무엇을 알려주나요?">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
-              <p className="font-semibold text-black dark:text-zinc-50">📥 받은 질문</p>
+              <p className="font-semibold text-black dark:text-zinc-50">{SECTION_NAMES.incoming}</p>
               <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-                누군가 1:1 DM이나 @멘션, 내가 시작한 스레드에서 나에게 물어봤는데 아직 답하지 않은 질문.
-                2시간이 지나면 알려드려요.
+                누가 1:1 DM, @멘션, 내가 시작한 스레드에서 나에게 물어봤는데 아직 답하지 않은 질문이에요. 2시간이
+                지나도 답이 없으면 알려드려요.
               </p>
             </div>
             <div className="rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
-              <p className="font-semibold text-black dark:text-zinc-50">📤 보낸 질문</p>
+              <p className="font-semibold text-black dark:text-zinc-50">{SECTION_NAMES.outgoing}</p>
               <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-                내가 채널·DM·스레드에서 물어봤는데 아직 답을 못 받은 질문. 상대에게 하루의 여유를 주고 24시간이
-                지나면 알려드려요.
+                내가 채널·DM·스레드에서 물어봤는데 아직 답을 못 받은 질문이에요. 상대에게 하루쯤 여유를 주고, 24시간이
+                지나도 답이 없으면 알려드려요.
               </p>
             </div>
           </div>
           <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            알림 메시지의 항목을 누르면 해당 메시지로 바로 이동하고, <b>완료</b>를 누르면 목록에서 지워져요. 확인할
-            게 없을 때는 아무 메시지도 보내지 않아요.
+            알림에서 질문을 누르면 원래 메시지로 바로 이동하고, <b>완료</b>를 누르면 목록에서 지워져요. 확인할 질문이
+            없으면 아무 메시지도 보내지 않아요.
           </p>
         </Section>
 
@@ -179,15 +180,16 @@ export default async function Home({
           <ScheduleGuide />
           <h3 className="mt-4 font-semibold text-black dark:text-zinc-50">직접 정하기</h3>
           <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            <code>/nudge</code> 뒤에 원하는 시간을 적으면 돼요. 한국어·영어 둘 다 알아들어요.
+            <code>/nudge</code> 뒤에 원하는 시간을 적으면 돼요. <b>Nudge DM 창에서는 <code>/nudge</code> 없이</b>{" "}
+            <code>9시</code>, <code>매시간</code>처럼 바로 입력해도 돼요. 한국어·영어 둘 다 알아들어요.
           </p>
           <CommandTable rows={SCHEDULE_COMMANDS} />
           <ul className="list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
             <li>
-              <b>매일/지정 시각</b>: 그 시각에 확인할 항목이 있으면 전체 목록을 보내요.
+              <b>정해진 시간</b>: 그 시간에 확인할 질문이 있으면 전체 목록을 보내요.
             </li>
             <li>
-              <b>매시간/간격</b>: 하루 첫 알림에 전체 목록을 보내고, 그 뒤로는 <b>새 항목이 생겼을 때만</b> 보내요.
+              <b>매시간/간격</b>: 하루 첫 알림에는 전체 목록을 보내고, 그 뒤로는 <b>새 질문이 생겼을 때만</b> 보내요.
               같은 목록이 매시간 반복되지 않아요.
             </li>
             <li>
@@ -198,25 +200,32 @@ export default async function Home({
         </Section>
 
         <Section title="그 밖의 명령어">
+          <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
+            💬 <b>Nudge DM 창에서는 앞의 <code>/nudge</code>를 빼고</b> <code>설정</code>, <code>목록</code>처럼 입력하면
+            돼요. 알림 아래의 <b>⚙️ 내 설정 · 🔄 지금 다시 확인 · 📖 사용법</b> 버튼을 눌러도 돼요.
+          </p>
           <CommandTable rows={OTHER_COMMANDS} />
         </Section>
 
         <Section title="자동으로 정리되는 경우">
           <ul className="list-disc space-y-1 pl-5 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
             <li>
-              <b>받은 질문</b>: 내가 답장하거나 파일을 보냈을 때 (&ldquo;확인해볼게요&rdquo; 같은 보류성 답장은 제외),
-              질문에 리액션(👍·✅·넵 등)을 달았을 때, 나를 cc·참조로만 넣은 질문에 다른 사람이 답했을 때, 질문한 사람이
-              &ldquo;해결됐어요&rdquo;라고 했을 때, 14일이 지났을 때
+              <b>{SECTION_NAMES.incoming}</b>: 내가 답장하거나 파일을 보냈을 때, 질문에 👍·✅·넵 같은 리액션을 달았을
+              때, 나를 cc·참조로만 넣은 질문에 다른 사람이 답했을 때, 질문한 사람이 &ldquo;해결됐어요&rdquo;라고 했을 때,
+              14일이 지났을 때
             </li>
             <li>
-              <b>보낸 질문</b>: 상대가 실질적인 답이나 파일을 줬을 때 (&ldquo;알아볼게요&rdquo;는 아직 답이 아니에요),
-              상대가 내 메시지에 👍·✅ 같은 리액션을 달았을 때, 봇이 답했을 때, 내가 &ldquo;해결했어요&rdquo;라고 남겼을 때
+              <b>{SECTION_NAMES.outgoing}</b>: 상대가 답하거나 파일을 보냈을 때, 상대가 내 메시지에 리액션을 달았을
+              때, 봇이 답했을 때, 내가 &ldquo;해결했어요&rdquo;라고 남겼을 때
             </li>
-            <li>원래 메시지가 삭제됐거나 내가 채널에서 나갔을 때</li>
-            <li>👀·⏳·🤔처럼 &ldquo;보는 중&rdquo;을 뜻하는 리액션은 답으로 보지 않아요.</li>
+            <li>원래 메시지를 지웠거나 내가 채널에서 나갔을 때</li>
             <li>
-              <b>완료</b> 버튼으로 지운 항목은 다시 나타나지 않아요. 같은 DM·스레드에서 연달아 온 질문은 한 줄로
-              묶이고 함께 지워져요.
+              &ldquo;확인해볼게요&rdquo;, &ldquo;알아볼게요&rdquo;처럼 미루는 답이나 👀·⏳·🤔(보는 중) 리액션은 아직
+              답으로 보지 않아요.
+            </li>
+            <li>
+              <b>완료</b> 버튼으로 지운 질문은 다시 나오지 않아요. 같은 DM·스레드에서 연달아 온 질문은 한 줄로 묶이고
+              함께 지워져요.
             </li>
           </ul>
         </Section>
@@ -249,17 +258,13 @@ export default async function Home({
             <div>
               <p className="font-medium text-black dark:text-zinc-50">지금 바로 확인하고 싶어요.</p>
               <p>
-                <code>/nudge refresh</code>를 입력하면 그 자리에서 Slack을 다시 확인하고 목록을 보여줘요.
+                알림 아래 <b>🔄 지금 다시 확인</b> 버튼을 누르거나, Nudge DM 창에 <code>새로고침</code>(다른 채널에서는{" "}
+                <code>/nudge 새로고침</code>)을 입력하면 그 자리에서 Slack을 다시 확인하고 목록을 보여줘요.
               </p>
             </div>
           </div>
         </Section>
 
-        <footer className="border-t border-zinc-200 pt-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
-          <a href="https://github.com/clio-dx/clio-nudge" className="underline hover:text-zinc-700 dark:hover:text-zinc-300">
-            GitHub에서 보기
-          </a>
-        </footer>
       </main>
     </div>
   );

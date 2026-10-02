@@ -1,6 +1,7 @@
 import { getUserFollowUps, itemId, type FollowUp, type FollowUpKind } from "@/lib/redis";
 import { escapeSlackText, getThreadLink } from "@/lib/slack";
 import type { NudgeUser } from "@/lib/db";
+import { SECTION_NAMES } from "@/lib/messages";
 
 const HOUR_MS = 60 * 60 * 1000;
 // Give people time to reply before nagging
@@ -71,10 +72,6 @@ function fallbackText(text: string): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Block = any;
 
-const SECTION_TITLES: Record<FollowUpKind, { title: string; hint: string }> = {
-  incoming: { title: "📥 답장이 필요한 질문", hint: "다른 사람이 나에게 물어봤는데 아직 답하지 않은 것" },
-  outgoing: { title: "📤 답을 기다리는 내 질문", hint: "내가 물어봤는데 아직 답을 못 받은 것" },
-};
 
 function sectionBlocks(
   kind: FollowUpKind,
@@ -82,7 +79,8 @@ function sectionBlocks(
   teamUrl: string,
   max: number,
   now: number,
-  isList: boolean
+  isList: boolean,
+  prefix: string
 ): Block[] {
   const groups = group(items, kind);
   if (groups.length === 0) return [];
@@ -92,7 +90,7 @@ function sectionBlocks(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${SECTION_TITLES[kind].title} · ${groups.length}*\n_${SECTION_TITLES[kind].hint}_`,
+        text: `*${SECTION_NAMES[kind]} · ${groups.length}*`,
       },
     },
   ];
@@ -116,7 +114,7 @@ function sectionBlocks(
 
   const hidden = groups.length - max;
   if (hidden > 0) {
-    const hint = isList ? "*완료*로 정리하면 나머지가 이어서 보여요" : "`/nudge list`로 더 보기";
+    const hint = isList ? "*완료*로 정리하면 나머지가 이어서 보여요" : `\`${prefix}목록\`을 입력하면 모두 볼 수 있어요`;
     blocks.push({
       type: "context",
       elements: [{ type: "mrkdwn", text: `_…외 ${hidden}개 더 있어요. ${hint}_` }],
@@ -135,28 +133,54 @@ export function countGroups(v: Visible): number {
   return c.incoming + c.outgoing;
 }
 
-// Slack allows 50 blocks per message: 1 header + 2×(title + items + more) + divider + footer
+// One-click shortcuts under every digest/list (handled in app/api/slack/interactions)
+export const QUICK_ACTIONS = {
+  settings: "nudge_settings",
+  refresh: "nudge_refresh",
+  help: "nudge_help",
+} as const;
+
+function quickActionsBlock(): Block {
+  const button = (text: string, action_id: string) => ({
+    type: "button",
+    text: { type: "plain_text", text, emoji: true },
+    action_id,
+    value: action_id,
+  });
+  return {
+    type: "actions",
+    elements: [
+      button("⚙️ 내 설정", QUICK_ACTIONS.settings),
+      button("🔄 지금 다시 확인", QUICK_ACTIONS.refresh),
+      button("📖 사용법", QUICK_ACTIONS.help),
+    ],
+  };
+}
+
+// Slack allows 50 blocks per message: 1 header + 2×(title + items + more) + divider + footer + actions
 export function buildDigestBlocks(
   v: Visible,
   teamUrl: string,
-  opts: { maxPerSection: number; now?: number; footer?: string; isList?: boolean }
+  opts: { maxPerSection: number; now?: number; footer?: string; isList?: boolean; prefix?: string }
 ): Block[] {
   const now = opts.now ?? Date.now();
   const total = countGroups(v);
+  const prefix = opts.prefix ?? "";
 
   if (total === 0) {
     return [
-      { type: "section", text: { type: "mrkdwn", text: "🎉 *모두 처리했어요!* 지금은 확인할 항목이 없어요." } },
+      { type: "section", text: { type: "mrkdwn", text: "🎉 *모두 처리했어요!* 지금은 확인할 질문이 없어요." } },
       ...(opts.footer ? [{ type: "context", elements: [{ type: "mrkdwn", text: opts.footer }] }] : []),
+      quickActionsBlock(),
     ];
   }
 
   const isList = opts.isList === true;
   const blocks: Block[] = [
-    { type: "section", text: { type: "mrkdwn", text: `*🔔 확인할 항목이 ${total}개 있어요*` } },
-    ...sectionBlocks("incoming", v.incoming, teamUrl, opts.maxPerSection, now, isList),
+    { type: "section", text: { type: "mrkdwn", text: `*🔔 확인할 질문이 ${total}개 있어요*` } },
+    ...sectionBlocks("incoming", v.incoming, teamUrl, opts.maxPerSection, now, isList, prefix),
     ...(v.incoming.length > 0 && v.outgoing.length > 0 ? [{ type: "divider" }] : []),
-    ...sectionBlocks("outgoing", v.outgoing, teamUrl, opts.maxPerSection, now, isList),
+    ...sectionBlocks("outgoing", v.outgoing, teamUrl, opts.maxPerSection, now, isList, prefix),
   ];
 
   blocks.push({
@@ -164,14 +188,15 @@ export function buildDigestBlocks(
     elements: [
       {
         type: "mrkdwn",
-        text: opts.footer ?? "답장했거나 신경 쓰지 않아도 되면 *완료*를 눌러 주세요 · `/nudge help` 사용법 · `/nudge` 설정",
+        text: opts.footer ?? "질문을 누르면 원래 메시지로 이동해요. 답장했거나 신경 쓰지 않아도 되면 *완료*를 눌러 주세요.",
       },
     ],
   });
+  blocks.push(quickActionsBlock());
   return blocks;
 }
 
 export function digestFallbackText(v: Visible): string {
   const total = countGroups(v);
-  return total > 0 ? `Nudge: 확인할 항목이 ${total}개 있어요` : "Nudge: 확인할 항목이 없어요";
+  return total > 0 ? `Nudge: 확인할 질문이 ${total}개 있어요` : "Nudge: 지금은 확인할 질문이 없어요";
 }

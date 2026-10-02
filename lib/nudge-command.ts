@@ -1,0 +1,304 @@
+// Runs a /nudge command for a user and sends the reply through a Responder, so the same
+// logic serves the slash command, plain messages in the Nudge DM, and digest buttons.
+import { createSlackClient, getUserTimezone } from "@/lib/slack";
+import { getUser, updateUser, type NudgeUser } from "@/lib/db";
+import { pollUser } from "@/lib/poll";
+import { buildDigestBlocks, formatAge, groupCounts, loadVisible, MIN_AGE_MS } from "@/lib/digest";
+import { getUserFollowUps } from "@/lib/redis";
+import { hourlyTriggerActive, settleBy, teamUrlFor } from "@/lib/tick";
+import { applyScheduleUpdate, parseCommand, type Command } from "@/lib/command";
+import {
+  currentSlot,
+  formatSchedule,
+  formatSlotTime,
+  formatTimezone,
+  isValidTimezone,
+  nextSlotTime,
+  resolveSchedule,
+  resolveTimezone,
+  worksWithDailyCronOnly,
+} from "@/lib/schedule";
+import { helpText, hourlyInactiveWarning, INTERVAL_NOTE, SECTION_NAMES } from "@/lib/messages";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Block = any;
+
+export interface Reply {
+  text?: string;
+  blocks?: Block[];
+}
+
+export interface Responder {
+  // How commands are written where the reply shows up: "" in the Nudge DM, "/nudge " elsewhere
+  prefix: string;
+  send(reply: Reply): Promise<void>;
+  // Replace the message `send` posted last (falls back to sending a new one)
+  replace(reply: Reply): Promise<void>;
+}
+
+function section(text: string): Block {
+  return { type: "section", text: { type: "mrkdwn", text } };
+}
+
+function context(text: string): Block {
+  return { type: "context", elements: [{ type: "mrkdwn", text }] };
+}
+
+// After a schedule/timezone change, start from the next slot instead of catching up on one
+// that already passed (the reply announces "다음 알림 …").
+function skipPastSlots(user: NudgeUser): Pick<NudgeUser, "lastSlot"> {
+  return { lastSlot: Math.max(user.lastSlot ?? -Infinity, currentSlot(Date.now())) };
+}
+
+// Pick up the timezone from the Slack profile the first time we see the user
+export async function ensureTimezone(user: NudgeUser): Promise<NudgeUser> {
+  if (user.tz) return user;
+  const tz = await getUserTimezone(createSlackClient(user.userToken), user.slackUserId);
+  if (!tz || !isValidTimezone(tz)) return user;
+  return (await updateUser(user.slackUserId, { tz, ...skipPastSlots(user) })) ?? user;
+}
+
+// "평일 오전 8시 (한국 시간) · 다음 알림 …" + notes
+async function scheduleSummary(user: NudgeUser, p: string): Promise<{ line: string; notes: string[] }> {
+  const { schedule, paused } = resolveSchedule(user);
+  const tz = resolveTimezone(user);
+  if (paused) return { line: `*꺼짐* — \`${p}켜기\`로 다시 켤 수 있어요`, notes: [] };
+
+  const notes: string[] = [];
+  const next = nextSlotTime(schedule, tz, Date.now());
+  const nextText = next ? ` · 다음 알림 ${formatSlotTime(next, tz)}` : "";
+  if (schedule.kind === "interval") notes.push(INTERVAL_NOTE);
+  if (!worksWithDailyCronOnly(schedule, tz, Date.now()) && !(await hourlyTriggerActive())) {
+    notes.push(hourlyInactiveWarning(p));
+  }
+  return { line: `*${formatSchedule(schedule)}* (${formatTimezone(tz)})${nextText}`, notes };
+}
+
+function quickCommands(p: string): string {
+  const c = (s: string) => `\`${p}${s}\``;
+  const tip =
+    p === ""
+      ? "_이 창에는 `/nudge` 없이 입력하면 돼요._"
+      : "_Nudge와의 DM 창에서는 `/nudge` 없이 `설정`, `목록`처럼 입력해도 돼요._";
+  return `${c("목록")} 질문 보기 · ${c("새로고침")} 지금 확인 · ${c("9시")} · ${c("매시간")} · ${c("끄기")} · ${c("도움말")} 전체 사용법\n${tip}`;
+}
+
+async function statusReply(user: NudgeUser, p: string): Promise<Reply> {
+  const { line, notes } = await scheduleSummary(user, p);
+  const counts = groupCounts(await loadVisible(user));
+  const onOff = (v: boolean | undefined) => (v === false ? "꺼짐" : "켜짐");
+  const lastCheck = user.lastPolledAt ? `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)}` : "아직 확인 전";
+
+  return {
+    text: "내 Nudge 설정",
+    blocks: [
+      section(
+        [
+          "*⚙️ 내 Nudge 설정*",
+          `• ⏰ 알림 시간: ${line}`,
+          `• ${SECTION_NAMES.incoming}: 알림 ${onOff(user.trackIncoming)} · 지금 ${counts.incoming}개`,
+          `• ${SECTION_NAMES.outgoing}: 알림 ${onOff(user.trackOutgoing)} · 지금 ${counts.outgoing}개`,
+          `_${lastCheck}_`,
+        ].join("\n")
+      ),
+      ...notes.map(context),
+      context(quickCommands(p)),
+    ],
+  };
+}
+
+async function listReply(user: NudgeUser, p: string, footer?: string): Promise<Reply> {
+  const [visible, teamUrl] = await Promise.all([loadVisible(user), teamUrlFor(user)]);
+  const lastCheck = user.lastPolledAt
+    ? `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)} · 다시 확인하려면 \`${p}새로고침\``
+    : `아직 Slack을 확인하기 전이에요 · \`${p}새로고침\`으로 지금 확인해 보세요`;
+  return {
+    text: "Nudge 질문 목록",
+    blocks: buildDigestBlocks(visible, teamUrl, { maxPerSection: 20, footer: footer ?? lastCheck, isList: true, prefix: p }),
+  };
+}
+
+// Tracked items still inside their grace period (2h / 24h), so not listed yet
+async function notYetVisible(user: NudgeUser): Promise<number> {
+  const now = Date.now();
+  const [incoming, outgoing] = await Promise.all([
+    user.trackIncoming !== false ? getUserFollowUps(user.slackUserId, "incoming") : [],
+    user.trackOutgoing !== false ? getUserFollowUps(user.slackUserId, "outgoing") : [],
+  ]);
+  return [...incoming, ...outgoing].filter((f) => now - f.createdAt < MIN_AGE_MS[f.kind ?? "outgoing"]).length;
+}
+
+// Poll now, then replace the "확인 중" message with the list
+async function refresh(out: Responder, user: NudgeUser): Promise<void> {
+  const p = out.prefix;
+  const userId = user.slackUserId;
+  const started = Date.now();
+  const stats = await settleBy(pollUser(user, started + 200_000), started + 240_000);
+  if (!stats) {
+    const stale = (await getUser(userId)) ?? user;
+    await out.replace(await listReply(stale, p, `확인할 메시지가 많아 아직 확인하고 있어요. 몇 분 뒤 \`${p}목록\`으로 다시 봐 주세요.`));
+    return;
+  }
+  if (stats.skipped) {
+    // Keep the list (and its buttons) on screen — a refresh button rewrites the digest in place
+    const current = (await getUser(userId)) ?? user;
+    await out.replace(await listReply(current, p, `⏳ 이미 확인하고 있어요. 잠시 뒤 \`${p}목록\`으로 결과를 봐 주세요.`));
+    return;
+  }
+  const found = stats.outgoing.tracked + stats.incoming.tracked;
+  const resolved = stats.outgoing.resolved + stats.incoming.resolved + stats.incoming.expired;
+  const deferred = stats.outgoing.deferred + stats.incoming.deferred;
+  const fresh = (await getUser(userId)) ?? user;
+  const waiting = await notYetVisible(fresh);
+  const parts = [`방금 확인했어요 · 새로 찾은 질문 ${found}개 · 정리된 질문 ${resolved}개`];
+  if (waiting > 0) parts.push(`아직 알림 전인 질문 ${waiting}개는 조금 뒤에 목록에 나와요 (📥 2시간, 📤 24시간 후)`);
+  if (deferred > 0 || stats.incomplete.length > 0) parts.push("확인할 메시지가 많아 일부는 다음 확인 때 이어서 볼게요");
+  if (stats.errors.length > 0) parts.push(`일부 대화는 확인하지 못했어요 (${stats.errors.length}건)`);
+  await out.replace(await listReply(fresh, p, parts.join(" · ")));
+}
+
+export async function runCommand(stored: NudgeUser, cmd: Command, out: Responder): Promise<void> {
+  const user = await ensureTimezone(stored);
+  const userId = user.slackUserId;
+  const p = out.prefix;
+
+  switch (cmd.type) {
+    case "status":
+      await out.send(await statusReply(user, p));
+      return;
+
+    case "help":
+      await out.send({ text: helpText(p) });
+      return;
+
+    case "list":
+      await out.send(await listReply(user, p));
+      return;
+
+    case "refresh": {
+      await out.send({ text: "🔍 Slack을 확인하고 있어요… 보통 1분 안에 끝나요." });
+      try {
+        await refresh(out, user);
+      } catch (err) {
+        console.error("nudge refresh failed:", err);
+        const failed = "😵 확인하다가 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요.";
+        // Prefer the current list with the error underneath, so nothing disappears from the screen
+        await out
+          .replace(await listReply(user, p, failed))
+          .catch(() => out.replace({ text: failed }))
+          .catch(() => {});
+      }
+      return;
+    }
+
+    case "thanks":
+      await out.send({ text: `😊 천만에요! 필요할 때 \`${p}설정\`, \`${p}목록\`, \`${p}도움말\`을 입력해 보세요.` });
+      return;
+
+    case "pause":
+      await updateUser(userId, { paused: true });
+      await out.send({
+        text: `🔕 알림을 껐어요. \`${p}새로고침\`으로 언제든 직접 확인할 수 있고, \`${p}켜기\`로 다시 켤 수 있어요.`,
+      });
+      return;
+
+    case "resume": {
+      // Store the schedule explicitly so a legacy "off" record ({reminderHours: []}) can't keep it
+      // paused. Only coming back from a real pause skips slots that already passed today;
+      // a no-op "/nudge on" must not cancel today's pending digest.
+      const wasPaused = resolveSchedule(user).paused;
+      const updated =
+        (await updateUser(userId, {
+          schedule: resolveSchedule(user).schedule,
+          paused: false,
+          reminderHours: undefined,
+          reminderInterval: undefined,
+          ...(wasPaused ? skipPastSlots(user) : {}),
+        })) ?? user;
+      const { line, notes } = await scheduleSummary(updated, p);
+      await out.send({ text: "알림을 다시 켰어요", blocks: [section(`🔔 알림을 다시 켰어요: ${line}`), ...notes.map(context)] });
+      return;
+    }
+
+    case "track": {
+      const updates: Partial<NudgeUser> = {};
+      if (cmd.incoming !== undefined) updates.trackIncoming = cmd.incoming;
+      if (cmd.outgoing !== undefined) updates.trackOutgoing = cmd.outgoing;
+      const updated = (await updateUser(userId, updates)) ?? user;
+      const what = cmd.incoming !== undefined ? SECTION_NAMES.incoming : SECTION_NAMES.outgoing;
+      const value = (cmd.incoming ?? cmd.outgoing) ? "켰어요" : "껐어요";
+      const lines = [`✓ ${what} 알림을 ${value}.`];
+      if (updated.trackIncoming === false && updated.trackOutgoing === false) {
+        lines.push("⚠️ 두 가지 알림이 모두 꺼져 있어서 아무 알림도 오지 않아요.");
+      }
+      await out.send({ text: lines.join("\n") });
+      return;
+    }
+
+    case "timezone": {
+      let tz: string | null = cmd.tz;
+      if (tz === "auto") tz = await getUserTimezone(createSlackClient(user.userToken), userId);
+      if (!tz || !isValidTimezone(tz)) {
+        await out.send({ text: `Slack 프로필에서 시간대를 가져오지 못했어요. 예: \`${p}tz Asia/Seoul\`` });
+        return;
+      }
+      const updated = (await updateUser(userId, { tz, ...skipPastSlots(user) })) ?? user;
+      const { line, notes } = await scheduleSummary(updated, p);
+      const label = formatTimezone(tz);
+      await out.send({
+        text: "시간대를 바꿨어요",
+        blocks: [
+          section(`🌏 시간대를 *${label}*${label === tz ? "" : ` (${tz})`}에 맞췄어요.\n⏰ 알림 시간: ${line}`),
+          ...notes.map(context),
+        ],
+      });
+      return;
+    }
+
+    case "schedule": {
+      const current = resolveSchedule(user).schedule;
+      const schedule = applyScheduleUpdate(current, cmd.update);
+      const updated =
+        (await updateUser(userId, {
+          schedule,
+          paused: false,
+          // Clear legacy fields so they can't shadow the new schedule
+          reminderHours: undefined,
+          reminderInterval: undefined,
+          // The first delivery is the "다음 알림" we report, not a catch-up of an earlier slot
+          ...skipPastSlots(user),
+        })) ?? user;
+      const { line, notes } = await scheduleSummary(updated, p);
+      await out.send({ text: "알림 시간을 바꿨어요", blocks: [section(`✓ 알림 시간을 바꿨어요: ${line}`), ...notes.map(context)] });
+      return;
+    }
+
+    case "error": {
+      // Parser examples are written as "/nudge …"; show them the way they're typed here
+      const message = cmd.message.replace(/`\/nudge /g, `\`${p}`);
+      const c = (s: string) => `\`${p}${s}\``;
+      await out.send({
+        text: `${message}\n\n이렇게 써 보세요: ${c("설정")} · ${c("목록")} · ${c("9시")} · ${c("매시간")} · ${c("2시간마다")} · ${c("끄기")}\n전체 사용법은 ${c("도움말")}로 볼 수 있어요.`,
+      });
+      return;
+    }
+  }
+}
+
+// Short acknowledgements people send back to a digest — answered kindly, not as an error
+const THANKS = /^(넵+|네+|넹|예|응|ㅇㅇ|ㅇㅋ|오케이|ok|okay|좋아요|굿|감사합니다|감사해요|고마워요?|고맙습니다|thanks?|thank you|thx)?[\s!.~^ㅎㅋ]*$/iu;
+
+// Text typed into the Nudge DM: "설정", "매일 9시", "/nudge 목록", "nudge list", a pasted
+// "`목록`" (inline code copied from the help) or "목록." all work
+export function parseDmText(text: string): Command {
+  const cleaned = text
+    .replace(/<@[A-Z0-9]+(?:\|[^>]*)?>/g, " ") // "@Nudge 목록"
+    .replace(/`/g, "")
+    .replace(/^\s*\/?nudge\b\s*/i, "")
+    .trim();
+  if (cleaned === "?") return { type: "help" };
+  // Slack sends emoji as ":+1:" shortcodes; a reply that's only emoji/thanks is a thank-you
+  const withoutEmoji = cleaned.replace(/:[a-z0-9_+'-]+:/g, "").trim();
+  if (cleaned && THANKS.test(withoutEmoji)) return { type: "thanks" };
+  return parseCommand(cleaned.replace(/[.!?~]+$/, ""));
+}

@@ -19,6 +19,7 @@ export type Command =
   | { type: "track"; incoming?: boolean; outgoing?: boolean }
   | { type: "timezone"; tz: string } // IANA name or "auto"
   | { type: "schedule"; update: ScheduleUpdate }
+  | { type: "thanks" } // "넵", "감사합니다" typed in the Nudge DM
   | { type: "error"; message: string };
 
 const MAX_TIMES = 12;
@@ -213,9 +214,10 @@ function parseSchedule(input: string): Command {
   if (!recognized || leftover) {
     return {
       type: "error",
-      message: leftover
-        ? `\`${leftover}\` 부분을 이해하지 못했어요.`
-        : "명령을 이해하지 못했어요.",
+      // "부분" only when something else in the message was understood
+      message: recognized
+        ? `\`${leftover}\` 부분은 이해하지 못했어요.`
+        : `이해하지 못한 명령이에요: \`${input.trim()}\``,
     };
   }
 

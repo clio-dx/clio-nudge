@@ -3,12 +3,18 @@ import { gateway } from "@ai-sdk/gateway";
 
 // Default model - uses Vercel AI Gateway format: provider/model
 const MODEL = process.env.AI_MODEL || "anthropic/claude-haiku-4.5";
+// Used when the plan can't access MODEL (e.g. a paid-only model on the AI Gateway free tier)
+const FALLBACK_MODEL = process.env.AI_FALLBACK_MODEL || "google/gemini-2.5-flash-lite";
 // Bounded so a slow model call can't push a cron run past its time limit
 const AI_TIMEOUT_MS = 20_000;
 // After a rate-limit error, stop calling the model for a while instead of failing every call
 const RATE_LIMIT_PAUSE_MS = 60_000;
+// When no model is reachable at all (plan/permission errors), wait longer before trying again
+const NO_ACCESS_PAUSE_MS = 10 * 60_000;
 
 let pausedUntil = 0;
+// Set once the configured model turned out to be off-limits for this plan
+let useFallback = false;
 
 export class AiUnavailableError extends Error {}
 
@@ -16,24 +22,35 @@ export function aiAvailable(): boolean {
   return Date.now() >= pausedUntil;
 }
 
-// Clears a rate-limit pause (tests; also safe to call after changing AI_MODEL)
+// Clears a pause and the fallback switch (tests; also safe to call after changing AI_MODEL)
 export function resumeAi(): void {
   pausedUntil = 0;
+  useFallback = false;
 }
 
+const isRateLimit = (err: unknown) => /rate.?limit|429|quota/i.test(String(err));
+const isNoAccess = (err: unknown) =>
+  /do(es)? not have access|free tier|upgrade to paid|403|forbidden|not allowed|permission/i.test(String(err));
+
 async function generate(prompt: string): Promise<string> {
-  if (!aiAvailable()) throw new AiUnavailableError("AI rate limit — paused");
+  if (!aiAvailable()) throw new AiUnavailableError("AI paused");
+  const model = useFallback ? FALLBACK_MODEL : MODEL;
   try {
     const { text } = await generateText({
-      model: gateway.languageModel(MODEL),
+      model: gateway.languageModel(model),
       timeout: AI_TIMEOUT_MS,
       maxRetries: 1,
       prompt,
     });
     return text;
   } catch (err) {
-    if (/rate.?limit|429|quota/i.test(String(err))) {
-      pausedUntil = Date.now() + RATE_LIMIT_PAUSE_MS;
+    if (isNoAccess(err) && model !== FALLBACK_MODEL) {
+      console.error(`AI model ${model} is not available on this plan; using ${FALLBACK_MODEL}:`, String(err).slice(0, 200));
+      useFallback = true;
+      return generate(prompt);
+    }
+    if (isRateLimit(err) || isNoAccess(err)) {
+      pausedUntil = Date.now() + (isRateLimit(err) ? RATE_LIMIT_PAUSE_MS : NO_ACCESS_PAUSE_MS);
       throw new AiUnavailableError(String(err).slice(0, 200));
     }
     throw err;

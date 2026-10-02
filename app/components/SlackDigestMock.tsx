@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { SECTION_NAMES } from "@/lib/messages";
 
 // A static "screenshot" of a Nudge digest DM, mirroring lib/digest.ts blocks
 
@@ -57,11 +58,10 @@ export function SlackDigestMock() {
             <span className="ml-1.5 text-xs text-zinc-500">오전 8:00</span>
           </p>
 
-          <p className="mt-1 font-bold">🔔 확인할 항목이 4개 있어요</p>
+          <p className="mt-1 font-bold">🔔 확인할 질문이 4개 있어요</p>
 
           <div className="mt-2">
-            <p className="font-bold">📥 답장이 필요한 질문 · 2</p>
-            <p className="text-[13px] italic text-zinc-500">다른 사람이 나에게 물어봤는데 아직 답하지 않은 것</p>
+            <p className="font-bold">{SECTION_NAMES.incoming} · 2</p>
             <Row label="김민지 - 견적서 회신 일정" meta="5시간 전" marker={1} />
             <Row label="박서준 (#마케팅) - 캠페인 예산 승인" meta="1일 전 · 질문 2개" marker={2} />
           </div>
@@ -69,16 +69,25 @@ export function SlackDigestMock() {
           <hr className="my-3 border-zinc-200" />
 
           <div>
-            <p className="font-bold">📤 답을 기다리는 내 질문 · 2</p>
-            <p className="text-[13px] italic text-zinc-500">내가 물어봤는데 아직 답을 못 받은 것</p>
+            <p className="font-bold">{SECTION_NAMES.outgoing} · 2</p>
             <Row label="#개발 - 배포 일정 확인" meta="2일 전" />
             <Row label="이하은 - 회의록 공유" meta="1일 전" />
           </div>
 
           <p className="mt-3 text-[13px] text-zinc-500">
-            답장했거나 신경 쓰지 않아도 되면 <b>완료</b>를 눌러 주세요 · <code className="rounded bg-zinc-100 px-1 text-[#e01e5a]">/nudge help</code>{" "}
-            사용법 · <code className="rounded bg-zinc-100 px-1 text-[#e01e5a]">/nudge</code> 설정
+            질문을 누르면 원래 메시지로 이동해요. 답장했거나 신경 쓰지 않아도 되면 <b>완료</b>를 눌러 주세요.
           </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {["⚙️ 내 설정", "🔄 지금 다시 확인", "📖 사용법"].map((label) => (
+              <span
+                key={label}
+                className="rounded border border-zinc-300 bg-white px-3 py-1 text-[13px] font-semibold text-[#1d1c1d] shadow-sm"
+              >
+                {label}
+              </span>
+            ))}
+            <Marker n={3} />
+          </div>
         </div>
       </div>
     </div>
@@ -86,6 +95,7 @@ export function SlackDigestMock() {
 }
 
 export const DIGEST_CALLOUTS = [
-  "항목을 누르면 원래 메시지(DM·스레드)로 바로 이동해요. 찾으러 다닐 필요가 없어요.",
-  "답장할 필요가 없으면 완료를 눌러 정리해요. 같은 DM에서 연달아 온 질문은 한 줄로 묶여 함께 지워져요.",
+  "질문을 누르면 원래 메시지(DM·스레드)로 바로 이동해요. 찾으러 다닐 필요가 없어요.",
+  "답장할 필요가 없으면 완료를 눌러 정리해요. 같은 DM에서 연달아 온 질문은 한 줄로 묶이고 함께 지워져요.",
+  "버튼 한 번으로 내 설정을 보거나, 지금 바로 다시 확인하거나, 사용법을 볼 수 있어요.",
 ];

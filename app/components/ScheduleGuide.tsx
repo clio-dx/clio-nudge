@@ -9,7 +9,7 @@ const STEPS = [
   { title: "복사", body: "마음에 드는 추천 설정의 복사 버튼을 눌러요." },
   {
     title: "Slack 입력창에 붙여넣기",
-    body: "아무 채널이나 DM의 메시지 입력란에 붙여넣어요(Ctrl+V / ⌘V). 위에 /nudge 안내가 뜨면 제대로 된 거예요.",
+    body: "Nudge DM 창이나 아무 채널의 메시지 입력란에 붙여넣어요(Ctrl+V / ⌘V). 입력창 위에 /nudge 안내가 뜨면 제대로 된 거예요.",
   },
   {
     title: "Enter",
@@ -92,8 +92,8 @@ export function ScheduleGuide() {
             안내 없이 Enter를 누르면 일반 메시지로 올라갈 수 있어요.
           </li>
           <li>
-            지금 설정을 확인하려면 <code>/nudge</code>, 기본값(평일 오전 8시)으로 되돌리려면 <code>/nudge 평일 8시</code>를
-            입력하세요.
+            지금 설정을 확인하려면 <code>/nudge 설정</code>, 기본값(평일 오전 8시)으로 되돌리려면{" "}
+            <code>/nudge 평일 8시</code>를 입력하세요. Nudge DM 창에서는 앞의 <code>/nudge</code>를 빼도 돼요.
           </li>
         </ul>
       </div>

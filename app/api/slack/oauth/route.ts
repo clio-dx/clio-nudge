@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 // Keep in sync with slack-app-manifest.json
-const BOT_SCOPES = ["chat:write", "im:write", "commands"];
+const BOT_SCOPES = ["chat:write", "im:write", "im:history", "commands"];
 const USER_SCOPES = [
   "channels:history",
   "channels:read",

@@ -1,14 +1,19 @@
 // Deterministic stand-in for the AI SDK: keyword rules instead of a model.
 
 export const aiCalls: string[] = [];
-// Set to make the next N calls fail like a provider rate limit
-export const aiFailures = { rateLimited: 0 };
+// Set to make the next N calls fail like a provider rate limit, or a model unavailable on the plan
+export const aiFailures = { rateLimited: 0, paidOnly: new Set<string>() };
+export const modelsUsed: string[] = [];
 
 function quoted(prompt: string, label: string): string {
   return prompt.match(new RegExp(`${label}: "([\\s\\S]*?)"\\n`))?.[1] ?? "";
 }
 
-export async function generateText({ prompt }: { prompt: string }): Promise<{ text: string }> {
+export async function generateText({ prompt, model }: { prompt: string; model?: { id?: string } }): Promise<{ text: string }> {
+  modelsUsed.push(model?.id ?? "");
+  if (model?.id && aiFailures.paidOnly.has(model.id)) {
+    throw new Error("GatewayInternalServerError: Free tier users do not have access to this model. Upgrade to paid credits");
+  }
   if (aiFailures.rateLimited > 0) {
     aiFailures.rateLimited--;
     throw new Error("Rate limit exceeded for model: this team's limit of 5 requests per minute was reached");
