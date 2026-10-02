@@ -81,13 +81,21 @@ export default async function Home({
           {installed ? (
             <div className="flex w-full flex-col items-center gap-3 rounded-lg bg-green-50 p-6 dark:bg-green-900/20">
               <p className="font-medium text-green-700 dark:text-green-400">
-                {installed === "updated" ? "✓ Nudge를 다시 연결했어요!" : "✓ Nudge가 설치됐어요!"}
+                {installed === "updated" ? "✓ Nudge를 다시 연결했어요!" : "✓ Nudge가 연결됐어요!"}
               </p>
               <p className="text-sm text-green-700 dark:text-green-500">
-                {installed === "updated"
-                  ? "알림 시간 등 기존 설정은 그대로예요. 잠시 뒤 "
-                  : "Slack DM으로 안내 메시지를 보냈어요. 지난 7일 치 메시지를 확인하는 중이니, 잠시 뒤 "}
-                Nudge DM 창에 <code className="rounded bg-green-100 px-1 dark:bg-green-800">목록</code>을 입력해 보세요.
+                {installed === "updated" ? (
+                  <>
+                    알림 시간 등 기존 설정은 그대로예요. Nudge DM 창에{" "}
+                    <code className="rounded bg-green-100 px-1 dark:bg-green-800">목록</code>을 입력하면 확인할 질문을 볼 수
+                    있어요.
+                  </>
+                ) : (
+                  <>
+                    Nudge DM으로 안내를 보냈어요. 지난 7일 치 메시지를 확인하는 중이니, 잠시 뒤 <b>📋 목록 보기</b>를 눌러
+                    보세요.
+                  </>
+                )}
               </p>
               <a
                 href={slackUrl}

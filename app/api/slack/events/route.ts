@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { createBoundedClient, verifySlackRequest } from "@/lib/slack";
 import { getUser, updateUser } from "@/lib/db";
-import { parseDmText, runCommand, type Responder } from "@/lib/nudge-command";
-import { DM_PREFIX, notInstalledReply } from "@/lib/messages";
+import { dmResponder, parseDmText, runCommand } from "@/lib/nudge-command";
+import { notInstalledReply } from "@/lib/messages";
 import { handleAppHomeOpened, workspaceBotToken, type AppHomeOpenedEvent } from "@/lib/home";
 
 // Lets people type "설정", "목록", "매일 9시" straight into the Nudge DM (bot event message.im),
@@ -20,29 +20,6 @@ interface MessageEvent {
   bot_id?: string;
   subtype?: string;
   thread_ts?: string;
-}
-
-// Replies in the DM as new messages (inside the thread if the command was typed in one);
-// "replace" edits the last reply (progress → result)
-function dmResponder(botToken: string, channel: string, threadTs?: string): Responder {
-  const client = createBoundedClient(botToken);
-  let lastTs: string | undefined;
-  return {
-    prefix: DM_PREFIX,
-    async send(reply) {
-      const res = await client.chat.postMessage({
-        channel,
-        text: reply.text ?? "Nudge",
-        blocks: reply.blocks,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-      });
-      lastTs = res.ts;
-    },
-    async replace(reply) {
-      if (!lastTs) return this.send(reply);
-      await client.chat.update({ channel, ts: lastTs, text: reply.text ?? "Nudge", blocks: reply.blocks ?? [] });
-    },
-  };
 }
 
 async function handleDmMessage(event: MessageEvent, teamId: string | undefined) {

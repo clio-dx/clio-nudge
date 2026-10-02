@@ -22,6 +22,7 @@ export interface NudgeUser {
   lastSentDate?: string;         // local YYYY-MM-DD of the last digest actually posted
   lastDigestIds?: string[];      // items in the last digest (to detect new ones)
   lastPolledAt?: number;
+  firstScanPending?: boolean;    // set on install; cleared once a poll got through the 7-day backlog
   // Where each search left off: oldest-first results, so earlier pages never shift
   searchCursors?: Partial<Record<"outgoing" | "mentions" | "with", { after: string; page: number }>>;
 

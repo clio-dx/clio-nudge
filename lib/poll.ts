@@ -919,7 +919,14 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
       }
     }
     await fillSummaries(ctx);
-    await updateUser(user.slackUserId, { lastPolledAt: started, searchCursors: ctx.cursors });
+    // The first scan after installing is done once a poll read everything it found
+    const caughtUp =
+      stats.incomplete.length === 0 && stats.incoming.deferred === 0 && stats.outgoing.deferred === 0;
+    await updateUser(user.slackUserId, {
+      lastPolledAt: started,
+      searchCursors: ctx.cursors,
+      ...(user.firstScanPending && caughtUp ? { firstScanPending: false } : {}),
+    });
   } finally {
     await releaseLock(lockKey);
     stats.ms = Date.now() - started;

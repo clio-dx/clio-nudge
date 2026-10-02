@@ -56,23 +56,12 @@ _알림의 *완료* 버튼으로 직접 지울 수도 있어요. 지운 질문�
 물음표(?)가 있거나 \`~할까요\`, \`~인가요\`, \`~부탁드립니다\`, \`~해 주세요\`처럼 질문이나 요청이 담긴 메시지예요. 📥는 1:1 DM, 나를 @멘션한 메시지, 내가 시작한 스레드의 답글만 보고, 봇 메시지는 빼요.`;
 }
 
-export const WELCOME_TEXT = `👋 *Nudge를 설치해 주셔서 고마워요!*
+// First DM after connecting: what's happening and one thing to try — the full guide is behind 도움말
+export const WELCOME_TEXT = `👋 *Nudge가 연결됐어요!*
+지난 7일 치 Slack에서 놓친 질문을 찾고 있어요. 잠시 뒤 *목록*을 한번 볼까요?`;
 
-Slack에서 놓치기 쉬운 질문을 모아서 알려드릴게요.
-• *${SECTION_NAMES.incoming}* — 누가 나에게 물어봤는데 아직 답하지 않은 질문
-• *${SECTION_NAMES.outgoing}* — 내가 물어봤는데 아직 답을 못 받은 질문
-
-*기본 설정*: 평일 오전 8시에 한 번, 확인할 질문이 있을 때만 DM을 보내요.
-
-*이 창에 바로 입력해 보세요*
-• \`설정\` — 내 알림 설정 보기
-• \`목록\` — 지금 확인할 질문 보기
-• \`9시\` — 평일 오전 9시에 받기
-• \`매시간\` — 근무시간(9~18시)에 매시간, 새 질문이 있을 때만 받기
-• \`도움말\` — 전체 사용법
-_다른 채널에서는 \`/nudge 설정\`처럼 앞에 \`/nudge\`를 붙이면 돼요._
-
-지금 지난 7일 치 메시지를 확인하고 있어요. 잠시 뒤 \`목록\`을 입력해 보세요.`;
+export const WELCOME_NOTE =
+  "이 창에 `목록`이라고 입력해도 돼요 · 확인할 질문이 있으면 평일 오전 8시에 알려드려요 · 궁금한 건 `도움말`";
 
 // Public site: the landing page, and where people connect Nudge the first time (Add to Slack)
 export const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://clio-nudge.vercel.app";

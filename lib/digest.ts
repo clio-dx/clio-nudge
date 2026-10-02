@@ -1,7 +1,7 @@
 import { getUserFollowUps, itemId, type FollowUp, type FollowUpKind } from "@/lib/redis";
 import { escapeSlackText, getThreadLink } from "@/lib/slack";
 import type { NudgeUser } from "@/lib/db";
-import { SECTION_NAMES } from "@/lib/messages";
+import { SECTION_NAMES, WELCOME_NOTE, WELCOME_TEXT } from "@/lib/messages";
 
 const HOUR_MS = 60 * 60 * 1000;
 // Give people time to reply before nagging
@@ -138,15 +138,38 @@ export const QUICK_ACTIONS = {
   settings: "nudge_settings",
   refresh: "nudge_refresh",
   help: "nudge_help",
+  list: "nudge_list",
 } as const;
 
+const button = (text: string, action_id: string, primary = false) => ({
+  type: "button",
+  text: { type: "plain_text", text, emoji: true },
+  action_id,
+  value: action_id,
+  ...(primary ? { style: "primary" } : {}),
+});
+
+// The first DM after connecting, with one button to try
+export function welcomeBlocks(): Block[] {
+  return [
+    { type: "section", text: { type: "mrkdwn", text: WELCOME_TEXT } },
+    { type: "actions", elements: [button("📋 목록 보기", QUICK_ACTIONS.list, true)] },
+    { type: "context", elements: [{ type: "mrkdwn", text: WELCOME_NOTE }] },
+  ];
+}
+
+// Shown instead of "모두 처리했어요" while the first check after connecting is still running
+export function firstCheckBlocks(): Block[] {
+  return [
+    { type: "section", text: { type: "mrkdwn", text: "⏳ 아직 지난 7일 치 Slack을 확인하고 있어요. 잠시 뒤에 다시 볼까요?" } },
+    {
+      type: "actions",
+      elements: [button("📋 목록 다시 보기", QUICK_ACTIONS.list, true), button("🔄 지금 다시 확인", QUICK_ACTIONS.refresh)],
+    },
+  ];
+}
+
 function quickActionsBlock(): Block {
-  const button = (text: string, action_id: string) => ({
-    type: "button",
-    text: { type: "plain_text", text, emoji: true },
-    action_id,
-    value: action_id,
-  });
   return {
     type: "actions",
     elements: [

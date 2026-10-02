@@ -6,7 +6,7 @@ import { resetSlack, workspace, type FakeMessage } from "./mocks/slack-web-api.t
 import { resetRedis } from "./mocks/redis.ts";
 import { aiCalls, aiFailures, aiVerdicts, modelsUsed, temperatures } from "./mocks/ai.ts";
 import { classifyResponse, classifyUserMessage, resumeAi } from "../lib/ai.ts";
-import { parseDmText, runCommand } from "../lib/nudge-command.ts";
+import { dmResponder, parseDmText, runCommand } from "../lib/nudge-command.ts";
 import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
 import { JUDGE_VERSION, pollUser } from "../lib/poll.ts";
 import { handleAppHomeOpened } from "../lib/home.ts";
@@ -14,7 +14,7 @@ import { CONNECT_URL } from "../lib/messages.ts";
 import { runTick } from "../lib/tick.ts";
 import { getUser, saveUser, updateUser, type NudgeUser } from "../lib/db.ts";
 import { addFollowUp, getSeen, getUserFollowUps, itemId, markSeen, redis, removeFollowUp } from "../lib/redis.ts";
-import { loadVisible, visibleIds } from "../lib/digest.ts";
+import { loadVisible, QUICK_ACTIONS, visibleIds, welcomeBlocks } from "../lib/digest.ts";
 import { currentSlot, localParts } from "../lib/schedule.ts";
 
 const ME = "UME";
@@ -551,6 +551,32 @@ test("opening Nudge before connecting shows how to start; after connecting, the 
   assert.match(home, /내 Nudge 설정/);
   assert.match(home, /app_redirect\?app=A1&team=T1/);
   assert.equal(workspace.posted.filter((p) => p.channel === "DNUDGE").length, 0, "no greeting for connected users");
+});
+
+test("the welcome DM is short and offers the list; the list says so while the first check runs", async () => {
+  const welcome = JSON.stringify(welcomeBlocks());
+  assert.match(welcome, /목록.*볼까요/);
+  assert.ok(welcome.includes(QUICK_ACTIONS.list), "one tap to see the list");
+  assert.ok(!/매시간|9시 13시|받은질문/.test(welcome), "no full usage guide up front");
+
+  // 📋 목록 보기 right after connecting, before the first check finished
+  const user = await install({ botDmChannel: "DNUDGE" });
+  await runCommand(user, { type: "list" }, dmResponder(user.botToken, "DNUDGE"));
+  const early = JSON.stringify(workspace.posted.at(-1)!.blocks);
+  assert.match(early, /확인하고 있어요/);
+  assert.ok(!early.includes("모두 처리했어요"), "not 'all done' before anything was checked");
+
+  // A first scan cut short (e.g. by the AI limit) with nothing found yet still says so
+  await updateUser(ME, { firstScanPending: true, lastPolledAt: Date.now() });
+  await runCommand((await getUser(ME))!, { type: "list" }, dmResponder(user.botToken, "DNUDGE"));
+  assert.match(JSON.stringify(workspace.posted.at(-1)!.blocks), /확인하고 있어요/);
+
+  await pollUser((await getUser(ME))!);
+  assert.equal((await getUser(ME))!.firstScanPending, false, "a poll that read everything ends the first scan");
+  await runCommand((await getUser(ME))!, { type: "list" }, dmResponder(user.botToken, "DNUDGE"));
+  const after = JSON.stringify(workspace.posted.at(-1)!.blocks);
+  assert.match(after, /확인할 질문이 \d+개 있어요/);
+  assert.equal(workspace.posted.at(-1)!.channel, "DNUDGE", "posted in the Nudge DM like a typed 목록");
 });
 
 test("notes in my self-DM are never tracked", async () => {

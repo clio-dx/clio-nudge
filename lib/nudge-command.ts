@@ -1,9 +1,9 @@
 // Runs a /nudge command for a user and sends the reply through a Responder, so the same
 // logic serves the slash command, plain messages in the Nudge DM, and digest buttons.
-import { createSlackClient, getUserTimezone } from "@/lib/slack";
+import { createBoundedClient, createSlackClient, getUserTimezone } from "@/lib/slack";
 import { getUser, updateUser, type NudgeUser } from "@/lib/db";
 import { pollUser } from "@/lib/poll";
-import { buildDigestBlocks, formatAge, groupCounts, loadVisible, MIN_AGE_MS } from "@/lib/digest";
+import { buildDigestBlocks, countGroups, firstCheckBlocks, formatAge, groupCounts, loadVisible, MIN_AGE_MS } from "@/lib/digest";
 import { getUserFollowUps } from "@/lib/redis";
 import { hourlyTriggerActive, settleBy, teamUrlFor } from "@/lib/tick";
 import { applyScheduleUpdate, parseCommand, type Command } from "@/lib/command";
@@ -44,6 +44,29 @@ export interface Responder {
   send(reply: Reply): Promise<void>;
   // Replace the message `send` posted last (falls back to sending a new one)
   replace(reply: Reply): Promise<void>;
+}
+
+// Replies in the Nudge DM as new messages (inside the thread if the command was typed in one);
+// "replace" edits the last reply (progress → result)
+export function dmResponder(botToken: string, channel: string, threadTs?: string): Responder {
+  const client = createBoundedClient(botToken);
+  let lastTs: string | undefined;
+  return {
+    prefix: DM_PREFIX,
+    async send(reply) {
+      const res = await client.chat.postMessage({
+        channel,
+        text: reply.text ?? "Nudge",
+        blocks: reply.blocks,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      });
+      lastTs = res.ts;
+    },
+    async replace(reply) {
+      if (!lastTs) return this.send(reply);
+      await client.chat.update({ channel, ts: lastTs, text: reply.text ?? "Nudge", blocks: reply.blocks ?? [] });
+    },
+  };
 }
 
 function section(text: string): Block {
@@ -90,6 +113,9 @@ function quickCommands(p: string): string {
   const tip = p === DM_PREFIX ? "" : "\n_Nudge와의 DM 창에서는 `/nudge` 없이 `설정`, `목록`처럼 입력해도 돼요._";
   return `${c("목록")} 질문 보기 · ${c("새로고침")} 지금 확인 · ${c("9시")} · ${c("매시간")} · ${c("끄기")} · ${c("도움말")} 전체 사용법${tip}`;
 }
+
+// After this, an unfinished first scan no longer holds the list back (e.g. the AI stays rate-limited)
+const FIRST_SCAN_GRACE_MS = 24 * 60 * 60 * 1000;
 
 // "⚙️ 내 Nudge 설정" block (+ notes), shared by the 설정 reply and the App Home tab
 async function settingsBlocks(user: NudgeUser, p: string): Promise<Block[]> {
@@ -156,9 +182,16 @@ export async function homeView(user: NudgeUser | null, messagesUrl: string): Pro
 
 async function listReply(user: NudgeUser, p: string, footer?: string): Promise<Reply> {
   const [visible, teamUrl] = await Promise.all([loadVisible(user), teamUrlFor(user)]);
-  const lastCheck = user.lastPolledAt
-    ? `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)}`
-    : "아직 Slack을 확인하기 전이에요";
+  // The first scan after connecting hasn't got through the 7-day backlog yet (still running, or
+  // cut short by the AI limit): an empty list there would wrongly say "모두 처리했어요"
+  const firstScan =
+    !user.lastPolledAt || (!!user.firstScanPending && Date.now() - user.installedAt < FIRST_SCAN_GRACE_MS);
+  if (firstScan && countGroups(visible) === 0) {
+    return { text: "아직 확인하고 있어요", blocks: [...firstCheckBlocks(), ...(footer ? [context(footer)] : [])] };
+  }
+  const lastCheck = !user.lastPolledAt
+    ? "아직 확인하고 있어요 · 질문이 더 나올 수 있어요"
+    : `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)}${firstScan ? " · 아직 다 보지 못해서 질문이 더 나올 수 있어요" : ""}`;
   return {
     text: "Nudge 질문 목록",
     blocks: buildDigestBlocks(visible, teamUrl, { maxPerSection: 20, footer: footer ?? lastCheck, isList: true, prefix: p }),

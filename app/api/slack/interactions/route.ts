@@ -6,7 +6,7 @@ import { getUser, type NudgeUser } from "@/lib/db";
 import { buildDigestBlocks, digestFallbackText, loadVisible, QUICK_ACTIONS } from "@/lib/digest";
 import { teamUrlFor } from "@/lib/tick";
 import { parseCommand } from "@/lib/command";
-import { runCommand, type Reply, type Responder } from "@/lib/nudge-command";
+import { dmResponder, runCommand, type Reply, type Responder } from "@/lib/nudge-command";
 import { DM_PREFIX, SLASH_PREFIX } from "@/lib/messages";
 
 // "🔄 지금 다시 확인" polls Slack inside waitUntil
@@ -66,6 +66,18 @@ async function handleQuickAction(payload: BlockActionsPayload, user: NudgeUser, 
     return;
   }
 
+  // 📋 목록 보기 (welcome DM): the list as a new message below, as if they had typed 목록
+  if (actionId === QUICK_ACTIONS.list && payload.channel?.id && !payload.container?.is_ephemeral) {
+    const out = dmResponder(user.botToken, payload.channel.id);
+    try {
+      await runCommand(user, { type: "list" }, { ...out, prefix });
+    } catch (err) {
+      console.error("list button failed:", err);
+      await out.send({ text: "😵 처리하다가 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요." }).catch(() => {});
+    }
+    return;
+  }
+
   // Settings / help: a separate message only the clicker sees, the digest stays as it is
   const ephemeral: Responder = {
     prefix,
@@ -82,7 +94,8 @@ async function handleQuickAction(payload: BlockActionsPayload, user: NudgeUser, 
     replace: async (reply) => ephemeral.send(reply),
   };
   try {
-    await runCommand(user, parseCommand(actionId === QUICK_ACTIONS.help ? "도움말" : "설정"), ephemeral);
+    const command = actionId === QUICK_ACTIONS.help ? "도움말" : actionId === QUICK_ACTIONS.list ? "목록" : "설정";
+    await runCommand(user, parseCommand(command), ephemeral);
   } catch (err) {
     console.error("quick action failed:", err);
     await ephemeral.send({ text: "😵 처리하다가 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요." }).catch(() => {});

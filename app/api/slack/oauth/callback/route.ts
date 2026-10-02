@@ -5,7 +5,7 @@ import { createSlackClient, getUserTimezone } from "@/lib/slack";
 import { pollUser } from "@/lib/poll";
 import { postDM } from "@/lib/tick";
 import { currentSlot } from "@/lib/schedule";
-import { WELCOME_TEXT } from "@/lib/messages";
+import { welcomeBlocks } from "@/lib/digest";
 import { publishHome } from "@/lib/home";
 
 // The first poll (7 days of history) runs in waitUntil
@@ -14,7 +14,7 @@ export const maxDuration = 300;
 async function onboard(user: NudgeUser, isNew: boolean, appId?: string) {
   if (isNew) {
     try {
-      await postDM(user, [{ type: "section", text: { type: "mrkdwn", text: WELCOME_TEXT } }], "Nudge를 설치해 주셔서 고마워요!");
+      await postDM(user, welcomeBlocks(), "Nudge가 연결됐어요! 잠시 뒤 목록을 한번 볼까요?");
     } catch (err) {
       console.error("welcome DM failed:", err);
     }
@@ -81,6 +81,7 @@ export async function GET(req: NextRequest) {
       botToken: data.access_token,
       userToken,
       installedAt: existing?.installedAt ?? Date.now(),
+      ...(existing ? {} : { firstScanPending: true }),
       ...(tz ? { tz } : {}),
       // A new user's first digest is the next scheduled slot, not a catch-up of one that just
       // passed; same when a reinstall sets the timezone for the first time
