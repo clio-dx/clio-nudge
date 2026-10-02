@@ -106,13 +106,18 @@ export default async function Home({
               </a>
             </div>
           ) : (
-            <a
-              href="/api/slack/oauth"
-              className="flex h-12 items-center justify-center gap-3 rounded-lg bg-[#4A154B] px-6 font-medium text-white transition-colors hover:bg-[#611f64]"
-            >
-              {SLACK_LOGO}
-              Add to Slack
-            </a>
+            <div className="flex flex-col items-center gap-3">
+              <a
+                href="/api/slack/oauth"
+                className="flex h-12 items-center justify-center gap-3 rounded-lg bg-[#4A154B] px-6 font-medium text-white transition-colors hover:bg-[#611f64]"
+              >
+                {SLACK_LOGO}
+                Add to Slack
+              </a>
+              <p className="text-sm text-zinc-500">
+                처음 한 번만 연결하면 돼요. <b>허용</b>을 누르면 Nudge DM으로 안내가 와요.
+              </p>
+            </div>
           )}
         </header>
 

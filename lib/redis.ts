@@ -19,6 +19,7 @@ export interface FollowUp {
   convType?: ConvType;
   askerId?: string;            // incoming: who asked
   checkedTs?: string;          // latest reply ts already judged "not an answer"
+  judgeVersion?: number;       // answer rules checkedTs was computed with (poll.ts JUDGE_VERSION)
   summary?: string;
   summaryVersion?: number;
   createdAt: number;
@@ -131,6 +132,11 @@ export async function getSeen(userId: string): Promise<Set<string>> {
 
 // ---------------------------------------------------------------------------
 // Locks
+
+// True only the first time it's called for `key` (one-off greetings)
+export async function firstTime(key: string): Promise<boolean> {
+  return (await redis.set(key, Date.now(), { nx: true })) === "OK";
+}
 
 export async function acquireLock(key: string, ttlSeconds: number): Promise<boolean> {
   const result = await redis.set(key, Date.now(), { nx: true, ex: ttlSeconds });

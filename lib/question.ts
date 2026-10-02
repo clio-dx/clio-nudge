@@ -120,6 +120,46 @@ export function otherMentions(text: string, selfId: string): string[] {
   return [...new Set(ids)].filter((id) => id !== selfId);
 }
 
+// Replies that put the answer off ("확인해볼게요", "보고 말씀드릴게요", "잠시만요", "let me check").
+// A reply written straight back is the answer unless it looks like one of these, so the net is
+// wide on purpose: a false match only costs an AI call, a miss would close the question.
+const DEFERRALS = [
+  // ~해볼게요 / ~보겠습니다 / ~봐야: 확인해볼게요, 알아보겠습니다, 찾아볼께요, 제가 볼게요
+  /(볼\s?[게께]|보겠|봐야|볼\s?예정|봐\s?드릴)/,
+  // checking + later / in progress / not yet: 확인하고, 검토 후, 확인할게요, 확인 좀 할게요,
+  // 확인중입니다, 확인이 필요해요, 아직 확인 못했어요, 확인 전이에요
+  /(확인|체크|검토|파악|조회|문의|알아보|찾아보|살펴보|여쭤보|물어보)\s?(을\s|를\s|좀\s|이\s|가\s)?(해\s?|하여\s?)?(하고|하구|보고|해서\s?(알려|말씀|공유|회신|연락)|한\s?(후|뒤|다음)|후|뒤|중|하겠|할\s?[게께]|해\s?드릴|드릴|해드리겠|하는\s?중|필요|못|전|안)/,
+  // not yet / busy right now: 아직요, 잠만요, 기다려 주세요, 회의 중이에요, 외근 중이라
+  /아직|잠만|기다려/,
+  /(회의|미팅|외근|통화|운전|휴가|출장|이동|외출|식사)\s?중/,
+  // looking at it: 보고 있어요, 찾고 있어요, 알아보고 있어요
+  /(보|찾|알아보|살펴보|확인하|검토하|체크하)고\s?있/,
+  // needs someone's sign-off first: 팀장님 컨펌 받아야 해요, 승인 받고 드릴게요
+  /(컨펌|승인|결재)\s?(을\s|를\s)?받(아야|고)/,
+  /\b(not yet|haven'?t|not sure|sec)\b/i,
+  // "I'll tell you" = no answer yet: 말씀드릴게요, 알려드리겠습니다, 회신드릴게요, 공유해 드릴게요
+  /(말씀|알려|연락|회신|답변|답장|답|공유|전달|업데이트)\s?(을\s|를\s)?(해\s?)?(드릴\s?[게께]|드리겠|드릴\s?예정|줄\s?[게께]|할\s?[게께]|하겠)/,
+  // waiting / later: 잠시만요, 조금만 기다려 주세요, 나중에 볼게요, 이따 볼게요, 회의 끝나고
+  /(잠시|잠깐|조금만|좀만|이따|나중|추후|끝나고|끝난\s?(후|뒤|다음))/,
+  // in progress: 보는 중, 처리 중이에요, 진행중입니다, 고민 중이에요
+  /(보는|처리|진행|작업|찾는|알아보는|고민|생각|대기|기다리는)\s?중/,
+  // waiting on someone else: 담당자한테 물어봤어요, 요청해 뒀어요
+  /(물어봤|여쭤봤|문의했|문의해\s?뒀|요청했|요청해\s?뒀|전달했|넘겼)/,
+  /\b(let me|lemme|i'?ll|i will|will|gonna|going to|need to|have to)\s+(\w+\s+){0,2}?(check|look|see|ask|find out|confirm|verify|review|get back|circle back|follow up|dig|investigate|think|revert|update|respond|reply)\b/i,
+  /\b(looking|checking|digging)\s+(into|on|in)\b/i,
+  /\b(on it|one sec|a sec|one moment|a moment|one min|a min|give me|gimme|hold on|hang on|bear with|brb|in a bit|later|tbd|not sure yet|checking|looking|asking|waiting|let you know|\d+\s?(sec|min)s?)\b/i,
+];
+
+// Does a reply need the AI to tell whether it answers the question? Only when it may be putting
+// the answer off, or carries nothing but a laugh/emoji/"?" ("ㅋㅋ", ":joy:"). Casual answers
+// ("그냥요.. 누가 보내길래", "몰라요", "넵") don't.
+export function needsAnswerCheck(text: string): boolean {
+  const cleaned = stripNoise(text);
+  if (DEFERRALS.some((re) => re.test(cleaned))) return true;
+  const hasLink = /<https?:|https?:\/\//.test(text); // sharing a link is an answer
+  return !hasLink && cleaned.replace(/[\s\p{P}\p{S}ㅋㅎㅠㅜ]/gu, "").length === 0;
+}
+
 // Reactions that mean "seen, not done yet" (or just a laugh). Any other reaction from the person
 // who owes the reply counts as an acknowledgement — workspaces use all kinds of custom emoji
 // for "넵/확인/감사", so a deny-list works better than a fixed allow-list.

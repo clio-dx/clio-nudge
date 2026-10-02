@@ -4,14 +4,16 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { resetSlack, workspace, type FakeMessage } from "./mocks/slack-web-api.ts";
 import { resetRedis } from "./mocks/redis.ts";
-import { aiCalls, aiFailures, modelsUsed } from "./mocks/ai.ts";
-import { resumeAi } from "../lib/ai.ts";
+import { aiCalls, aiFailures, aiVerdicts, modelsUsed, temperatures } from "./mocks/ai.ts";
+import { classifyResponse, classifyUserMessage, resumeAi } from "../lib/ai.ts";
 import { parseDmText, runCommand } from "../lib/nudge-command.ts";
 import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
-import { pollUser } from "../lib/poll.ts";
+import { JUDGE_VERSION, pollUser } from "../lib/poll.ts";
+import { handleAppHomeOpened } from "../lib/home.ts";
+import { CONNECT_URL } from "../lib/messages.ts";
 import { runTick } from "../lib/tick.ts";
 import { getUser, saveUser, updateUser, type NudgeUser } from "../lib/db.ts";
-import { addFollowUp, getUserFollowUps, itemId, markSeen, redis, removeFollowUp } from "../lib/redis.ts";
+import { addFollowUp, getSeen, getUserFollowUps, itemId, markSeen, redis, removeFollowUp } from "../lib/redis.ts";
 import { loadVisible, visibleIds } from "../lib/digest.ts";
 import { currentSlot, localParts } from "../lib/schedule.ts";
 
@@ -112,6 +114,8 @@ beforeEach(() => {
   aiFailures.rateLimited = 0;
   aiFailures.paidOnly.clear();
   modelsUsed.length = 0;
+  temperatures.length = 0;
+  aiVerdicts.clear();
   resumeAi();
   T = {};
   buildWorkspace();
@@ -302,6 +306,101 @@ test("an AI rate limit postpones work instead of failing it, and nothing is lost
   assert.equal((await getUserFollowUps(ME, "outgoing")).length, 2);
 });
 
+test("my casual reply in a group-DM thread settles the question, whatever the AI would say", async () => {
+  const user = await install();
+  const root = msg({ channel: "GMP", user: ME, text: "구매하겠냐구요", hoursAgo: 27 });
+  const asked = msg({ channel: "GMP", user: "UA", text: "그래서 가방은 왜여!?", thread_ts: root, hoursAgo: 26 });
+  const reply = "그냥요.. 누가 보내길래 뭔 브랜든가해서";
+  msg({ channel: "GMP", user: ME, text: reply, thread_ts: root, hoursAgo: 25.99 });
+  aiVerdicts.set(reply, "non-committal"); // what the model answered in production
+  const deferred = msg({ channel: "GMP", user: "UB", text: "회식 장소 어디예요?", thread_ts: root, hoursAgo: 25 });
+  msg({ channel: "GMP", user: ME, text: "확인해볼게요", thread_ts: root, hoursAgo: 24.9 });
+
+  await pollUser(user);
+  const incoming = ids(await getUserFollowUps(ME, "incoming"));
+  assert.ok(!incoming.includes(`GMP:${asked}`), "answered in the thread");
+  assert.ok(!aiCalls.includes(`classify:${reply}`), "a direct casual reply needs no AI");
+  assert.ok(incoming.includes(`GMP:${deferred}`), "'확인해볼게요' still isn't an answer");
+  assert.ok(temperatures.length > 0 && temperatures.every((t) => t === 0), "verdicts are deterministic");
+});
+
+test("an item pinned by an older misjudgment gets one more look, then keeps its checkpoint", async () => {
+  const user = await install();
+  const root = msg({ channel: "GMP", user: ME, text: "점심 메뉴 공유드려요", hoursAgo: 27 });
+  const asked = msg({ channel: "GMP", user: "UA", text: "그래서 가방은 왜여!?", thread_ts: root, hoursAgo: 26 });
+  const casual = msg({ channel: "GMP", user: ME, text: "그냥요.. 누가 보내길래 뭔 브랜든가해서", thread_ts: root, hoursAgo: 25.99 });
+  const open = msg({ channel: "GMP", user: "UB", text: "회식 장소 어디예요?", thread_ts: root, hoursAgo: 25 });
+  const deferral = msg({ channel: "GMP", user: ME, text: "확인해볼게요", thread_ts: root, hoursAgo: 24.9 });
+  // Stored by the previous version: each reply was judged "not an answer" and checkedTs moved past it
+  const pinned = (threadTs: string, askerId: string, text: string, checkedTs: string) =>
+    addFollowUp({
+      kind: "incoming", userId: ME, channel: "GMP", threadTs, parentThreadTs: root, originalMessage: text,
+      convType: "mpim", askerId, checkedTs, createdAt: parseFloat(threadTs) * 1000, lastRemindedAt: null, lastActivityAt: 0,
+    });
+  await pinned(asked, "UA", "그래서 가방은 왜여!?", casual);
+  await pinned(open, "UB", "회식 장소 어디예요?", deferral);
+
+  await pollUser(user);
+  const incoming = await getUserFollowUps(ME, "incoming");
+  assert.ok(!ids(incoming).includes(`GMP:${asked}`), "re-read from the question and resolved");
+  assert.ok((await getSeen(ME)).has(itemId("incoming", "GMP", asked)), "and never comes back");
+  const still = incoming.find((f) => f.threadTs === open);
+  assert.ok(still, "a real deferral stays open");
+  assert.equal(still.judgeVersion, JUDGE_VERSION);
+  assert.equal(still.checkedTs, deferral);
+
+  const before = aiCalls.filter((c) => c.startsWith("classify:")).length;
+  await pollUser((await getUser(ME))!);
+  assert.equal(aiCalls.filter((c) => c.startsWith("classify:")).length, before, "not re-judged once stamped");
+});
+
+test("a reply split over two messages is read as one; a bystander's 'me too' isn't an answer", async () => {
+  const user = await install();
+  // "넵" then "확인해볼게요" right after: still waiting on me
+  channel("DS", "im", [ME, "UC"]);
+  const split = msg({ channel: "DS", user: "UC", text: "견적서 언제 받을 수 있을까요?", hoursAgo: 5 });
+  msg({ channel: "DS", user: ME, text: "넵", hoursAgo: 4.5 });
+  msg({ channel: "DS", user: ME, text: "확인해볼게요", hoursAgo: 4.499 });
+  // My question to UB; UC chimes in on the thread
+  const toUB = msg({ channel: "CGEN", user: ME, text: "<@UB> 배포 언제 되나요?", hoursAgo: 30 });
+  msg({ channel: "CGEN", user: "UC", text: "저도 궁금하네요", thread_ts: toUB, hoursAgo: 29 });
+  aiVerdicts.set("저도 궁금하네요", "non-committal");
+
+  await pollUser(user);
+  assert.ok(ids(await getUserFollowUps(ME, "incoming")).includes(`DS:${split}`), "'넵 확인해볼게요' is a deferral");
+  assert.ok(aiCalls.includes("classify:넵 확인해볼게요"), "the AI sees both messages together");
+  assert.ok(ids(await getUserFollowUps(ME, "outgoing")).includes(`CGEN:${toUB}`), "UB hasn't answered");
+});
+
+test("re-reading an item judged under older rules spends no AI on what was judged then", async () => {
+  const user = await install();
+  channel("DQ", "im", [ME, "UA"]);
+  const asked = msg({ channel: "DQ", user: "UA", text: "다음 주 일정 공유 가능할까요?", hoursAgo: 30 });
+  msg({ channel: "DQ", user: ME, text: "일정 확인하고 알려드릴게요", hoursAgo: 29 });
+  const last = msg({ channel: "DQ", user: "UA", text: "넵 감사합니다", hoursAgo: 28 });
+  await addFollowUp({
+    kind: "incoming", userId: ME, channel: "DQ", threadTs: asked, originalMessage: "다음 주 일정 공유 가능할까요?",
+    convType: "im", askerId: "UA", checkedTs: last, createdAt: parseFloat(asked) * 1000, lastRemindedAt: null, lastActivityAt: 0,
+  });
+
+  await pollUser(user);
+  const item = (await getUserFollowUps(ME, "incoming")).find((f) => f.threadTs === asked);
+  assert.ok(item, "still waiting on me");
+  assert.equal(item.judgeVersion, JUDGE_VERSION);
+  assert.equal(item.checkedTs, last, "checkpoint kept");
+  const reJudged = aiCalls.filter((c) => c === "classify:일정 확인하고 알려드릴게요" || c === "user:넵 감사합니다");
+  assert.equal(reJudged.length, 0, "messages judged before aren't sent to the AI again");
+});
+
+test("the classifier's verdict is read from the start of the model's answer", async () => {
+  aiVerdicts.set("내일 드릴게요", "answer\n\n(not non-committal)");
+  aiVerdicts.set("알아볼게요", "**Non-committal**");
+  aiVerdicts.set("이거 어떻게 됐나요", "follow-up, not self-resolved");
+  assert.equal(await classifyResponse("자료 언제 받을 수 있나요?", "내일 드릴게요"), "answer");
+  assert.equal(await classifyResponse("자료 언제 받을 수 있나요?", "알아볼게요"), "non-committal");
+  assert.equal(await classifyUserMessage("자료 언제 받을 수 있나요?", "이거 어떻게 됐나요"), "follow-up");
+});
+
 test("a reaction from the other side settles my request; 👀 doesn't", async () => {
   const user = await install();
   channel("DF", "im", [ME, "UC"]);
@@ -427,6 +526,31 @@ test("a paid-only model on the free plan falls back to the free model instead of
   // Calls run 4 at a time, so at most the first parallel batch hits the blocked model
   assert.ok(modelsUsed.filter((m) => m === "anthropic/claude-haiku-4.5").length <= 4, "the blocked model isn't retried");
   assert.equal((await getUserFollowUps(ME, "incoming")).length, 5, "detection still works");
+});
+
+test("opening Nudge before connecting shows how to start; after connecting, the 홈 tab shows my settings", async () => {
+  await install({ botDmChannel: "DNUDGE" });
+  const urls = (blocks: unknown): string[] => JSON.stringify(blocks).match(/https:[^"]+/g) ?? [];
+
+  // A coworker who never connected opens the 홈 tab, then the 메시지 tab twice
+  await handleAppHomeOpened({ type: "app_home_opened", user: "UA", channel: "DUA", tab: "home" }, "T1", "A1");
+  const start = workspace.published.at(-1)!;
+  assert.equal(start.user_id, "UA");
+  assert.match(JSON.stringify(start.view.blocks), /Nudge 시작하기/);
+  assert.ok(urls(start.view.blocks).includes(CONNECT_URL), "one tap to connect");
+
+  await handleAppHomeOpened({ type: "app_home_opened", user: "UA", channel: "DUA", tab: "messages" }, "T1", "A1");
+  await handleAppHomeOpened({ type: "app_home_opened", user: "UA", channel: "DUA", tab: "messages" }, "T1", "A1");
+  const guides = workspace.posted.filter((p) => p.channel === "DUA");
+  assert.equal(guides.length, 1, "the connect guide is sent once, not on every visit");
+  assert.ok(urls(guides[0].blocks).includes(CONNECT_URL));
+
+  // I'm connected: settings, what to type, and a button to the Nudge DM
+  await handleAppHomeOpened({ type: "app_home_opened", user: ME, channel: "DNUDGE", tab: "home" }, "T1", "A1");
+  const home = JSON.stringify(workspace.published.at(-1)!.view.blocks);
+  assert.match(home, /내 Nudge 설정/);
+  assert.match(home, /app_redirect\?app=A1&team=T1/);
+  assert.equal(workspace.posted.filter((p) => p.channel === "DNUDGE").length, 0, "no greeting for connected users");
 });
 
 test("notes in my self-DM are never tracked", async () => {

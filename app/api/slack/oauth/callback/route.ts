@@ -6,11 +6,12 @@ import { pollUser } from "@/lib/poll";
 import { postDM } from "@/lib/tick";
 import { currentSlot } from "@/lib/schedule";
 import { WELCOME_TEXT } from "@/lib/messages";
+import { publishHome } from "@/lib/home";
 
 // The first poll (7 days of history) runs in waitUntil
 export const maxDuration = 300;
 
-async function onboard(user: NudgeUser, isNew: boolean) {
+async function onboard(user: NudgeUser, isNew: boolean, appId?: string) {
   if (isNew) {
     try {
       await postDM(user, [{ type: "section", text: { type: "mrkdwn", text: WELCOME_TEXT } }], "Nudge를 설치해 주셔서 고마워요!");
@@ -18,9 +19,14 @@ async function onboard(user: NudgeUser, isNew: boolean) {
       console.error("welcome DM failed:", err);
     }
   }
+  // Re-read so the poll and the 홈 tab know the Nudge DM channel recorded above
+  const fresh = (await getUser(user.slackUserId)) ?? user;
   try {
-    // Re-read so the poll knows the Nudge DM channel recorded above
-    const fresh = (await getUser(user.slackUserId)) ?? user;
+    await publishHome(fresh, appId);
+  } catch (err) {
+    console.error("home tab publish failed:", err);
+  }
+  try {
     const stats = await pollUser(fresh, Date.now() + 240_000);
     console.log("first poll", user.slackUserId, JSON.stringify({ ...stats, errors: stats.errors.length }));
   } catch (err) {
@@ -83,7 +89,7 @@ export async function GET(req: NextRequest) {
         : {}),
     });
 
-    waitUntil(onboard(user, !existing));
+    waitUntil(onboard(user, !existing, data.app_id));
 
     const installed = existing ? "updated" : "new";
     return NextResponse.redirect(`${appUrl}?installed=${installed}&team=${encodeURIComponent(data.team.id)}`);

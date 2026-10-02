@@ -4,7 +4,7 @@ import { verifySlackRequest } from "@/lib/slack";
 import { getUser } from "@/lib/db";
 import { parseCommand } from "@/lib/command";
 import { runCommand, type Reply, type Responder } from "@/lib/nudge-command";
-import { DM_PREFIX, NOT_INSTALLED_TEXT, SLASH_PREFIX } from "@/lib/messages";
+import { DM_PREFIX, notInstalledReply, SLASH_PREFIX } from "@/lib/messages";
 
 // /nudge refresh polls Slack inside waitUntil
 export const maxDuration = 300;
@@ -29,7 +29,7 @@ function slashResponder(responseUrl: string, prefix: string): Responder {
 async function handleNudgeCommand(responseUrl: string, userId: string, text: string, channelId: string | null) {
   const user = await getUser(userId);
   if (!user) {
-    await respond(responseUrl, { text: NOT_INSTALLED_TEXT(process.env.NEXT_PUBLIC_APP_URL || "") });
+    await respond(responseUrl, notInstalledReply());
     return;
   }
   // Typed inside the Nudge DM: show commands without "/nudge", like the DM's own replies and buttons

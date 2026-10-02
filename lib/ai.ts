@@ -40,6 +40,8 @@ async function generate(prompt: string): Promise<string> {
       model: gateway.languageModel(model),
       timeout: AI_TIMEOUT_MS,
       maxRetries: 1,
+      // Verdicts are stored for good, so the same message must always get the same one
+      temperature: 0,
       prompt,
     });
     return text;
@@ -101,9 +103,13 @@ Answer examples:
 - Closure responses: "thanks for...", "perfect", "got it, I'll...", "감사합니다", "해결됐어요", "반영했습니다"
 - Any response that indicates the conversation can move forward
 - Links/URLs or files (sharing a resource IS a valid answer)
+- Short, casual or vague answers and reasons: "그냥요", "그냥 궁금해서요", "몰라요", "글쎄요", "별거 아니에요", "ㅇㅇ"
 
 If the response contains acknowledgment WITH a next action or agreement, classify as "answer".
-Only classify as "non-committal" if the person is purely deferring without substance.
+A reason or fact about something that already happened ("~해서", "~길래", "~거든요", "~했어요") is an answer.
+Trailing "..", "ㅋㅋ" or emoji don't change that.
+Someone saying they want to know too ("저도 궁금해요", "+1") or only asking back is "non-committal".
+Only classify as "non-committal" if the person is purely deferring without substance (promising to check or reply later). When unsure, choose "answer".
 
 Original question: "${originalQuestion}"
 
@@ -111,8 +117,8 @@ Response received: "${response}"
 
 Reply with ONLY one word: "answer" or "non-committal"`);
 
-  const cleaned = text.toLowerCase().trim();
-  return cleaned.includes("non-committal") ? "non-committal" : "answer";
+  // Read the verdict from the start: "answer (not non-committal)" is still an answer
+  return /^\W*non-committal/.test(text.toLowerCase().trim()) ? "non-committal" : "answer";
 }
 
 export async function classifyUserMessage(
@@ -133,6 +139,5 @@ New message: "${newMessage}"
 
 Reply with ONLY one word: "follow-up" or "self-resolved"`);
 
-  const cleaned = text.toLowerCase().trim();
-  return cleaned.includes("self-resolved") ? "self-resolved" : "follow-up";
+  return /^\W*self-resolved/.test(text.toLowerCase().trim()) ? "self-resolved" : "follow-up";
 }

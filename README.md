@@ -101,11 +101,11 @@ Vercel **Hobby** 플랜은 cron을 **하루 한 번**만 돌릴 수 있어요. �
 
 ### 1. Slack 앱
 
-[api.slack.com/apps](https://api.slack.com/apps) → **Create New App → From an app manifest**에 [`slack-app-manifest.json`](slack-app-manifest.json)을 붙여 넣으세요(도메인은 본인 배포 주소로 바꾸기). App Home에서 **Messages Tab**과 "Allow users to send Slash commands and messages from the messages tab"을 켜야 Nudge DM에서 명령어를 입력할 수 있어요.
+[api.slack.com/apps](https://api.slack.com/apps) → **Create New App → From an app manifest**에 [`slack-app-manifest.json`](slack-app-manifest.json)을 붙여 넣으세요(도메인은 본인 배포 주소로 바꾸기). App Home에서 **Home Tab**, **Messages Tab**, "Allow users to send Slash commands and messages from the messages tab"을 켜야 해요. 홈 탭에는 연결 전이면 시작 방법과 **Nudge 연결하기** 버튼이, 연결 후면 내 설정이 보이고, Nudge DM에서는 명령어를 바로 입력할 수 있어요. 이미 만든 앱이면 **App Manifest**에 이 파일을 다시 붙여 넣고 Save하세요(스코프가 그대로면 다시 설치할 필요 없어요).
 
 - User scopes: `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `search:read`, `users:read`
 - Bot scopes: `chat:write`, `im:write`, `im:history`, `commands` (`im:history`는 Nudge DM에 입력한 `설정`, `목록` 같은 말을 받기 위해 필요해요)
-- Event Subscriptions: Request URL `https://<배포 주소>/api/slack/events`, bot event `message.im`
+- Event Subscriptions: Request URL `https://<배포 주소>/api/slack/events`, bot events `app_home_opened`(홈 탭·첫 안내), `message.im`(DM 명령어)
 - 스코프를 바꾼 뒤에는 사용자가 한 번 다시 설치(Add to Slack)해야 새 권한이 적용돼요.
 
 ### 2. 환경변수 (Vercel)

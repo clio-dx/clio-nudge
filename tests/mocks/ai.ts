@@ -4,13 +4,26 @@ export const aiCalls: string[] = [];
 // Set to make the next N calls fail like a provider rate limit, or a model unavailable on the plan
 export const aiFailures = { rateLimited: 0, paidOnly: new Set<string>() };
 export const modelsUsed: string[] = [];
+export const temperatures: (number | undefined)[] = [];
+// Raw model output to return for a given reply / message text, ahead of the keyword rules
+// (simulates a model that misjudges, or answers wordily)
+export const aiVerdicts = new Map<string, string>();
 
 function quoted(prompt: string, label: string): string {
   return prompt.match(new RegExp(`${label}: "([\\s\\S]*?)"\\n`))?.[1] ?? "";
 }
 
-export async function generateText({ prompt, model }: { prompt: string; model?: { id?: string } }): Promise<{ text: string }> {
+export async function generateText({
+  prompt,
+  model,
+  temperature,
+}: {
+  prompt: string;
+  model?: { id?: string };
+  temperature?: number;
+}): Promise<{ text: string }> {
   modelsUsed.push(model?.id ?? "");
+  temperatures.push(temperature);
   if (model?.id && aiFailures.paidOnly.has(model.id)) {
     throw new Error("GatewayInternalServerError: Free tier users do not have access to this model. Upgrade to paid credits");
   }
@@ -21,11 +34,13 @@ export async function generateText({ prompt, model }: { prompt: string; model?: 
   if (prompt.includes('"answer" or "non-committal"')) {
     const response = quoted(prompt, "Response received");
     aiCalls.push(`classify:${response}`);
+    if (aiVerdicts.has(response)) return { text: aiVerdicts.get(response)! };
     return { text: /확인해볼게요|알아볼게요|잠시만|will check|looking into/.test(response) ? "non-committal" : "answer" };
   }
   if (prompt.includes('"follow-up" or "self-resolved"')) {
     const message = quoted(prompt, "New message");
     aiCalls.push(`user:${message}`);
+    if (aiVerdicts.has(message)) return { text: aiVerdicts.get(message)! };
     return { text: /해결|nvm|figured it out/.test(message) ? "self-resolved" : "follow-up" };
   }
   aiCalls.push("summary");

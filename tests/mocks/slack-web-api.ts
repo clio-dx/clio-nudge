@@ -28,6 +28,7 @@ export const workspace = {
   ghosts: [] as FakeMessage[], // deleted, but still in the search index
   posted: [] as { channel: string; text?: string; blocks?: unknown[] }[],
   updated: [] as { channel: string; ts: string; blocks?: unknown[] }[],
+  published: [] as { user_id: string; view: { type?: string; blocks?: unknown[] } }[], // App Home views
   calls: [] as string[],
 };
 
@@ -38,6 +39,7 @@ export function resetSlack(): void {
   workspace.ghosts.length = 0;
   workspace.posted.length = 0;
   workspace.updated.length = 0;
+  workspace.published.length = 0;
   workspace.calls.length = 0;
 }
 
@@ -214,6 +216,13 @@ export class WebClient {
     },
     update: async ({ channel, ts, blocks }: { channel: string; ts: string; blocks?: unknown[] }) => {
       workspace.updated.push({ channel, ts, blocks });
+      return { ok: true };
+    },
+  };
+
+  views = {
+    publish: async ({ user_id, view }: { user_id: string; view: { type?: string; blocks?: unknown[] } }) => {
+      workspace.published.push({ user_id, view });
       return { ok: true };
     },
   };

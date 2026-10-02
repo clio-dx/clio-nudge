@@ -13,7 +13,7 @@ import {
   worksWithDailyCronOnly,
   type Schedule,
 } from "../lib/schedule.ts";
-import { isAckReaction, isCcMention, isLikelyQuestion, otherMentions } from "../lib/question.ts";
+import { isAckReaction, isCcMention, isLikelyQuestion, needsAnswerCheck, otherMentions } from "../lib/question.ts";
 import { PRESETS } from "../lib/presets.ts";
 
 const HOUR = 3600_000;
@@ -335,6 +335,31 @@ test("recommended presets parse to what the landing page promises", () => {
     const result = schedule(parseCommand(p.command.slice("/nudge ".length)));
     assert.equal(formatSchedule(result), p.schedule, p.id);
   }
+});
+
+test("needsAnswerCheck: only replies that put the answer off (or say nothing) go to the AI", () => {
+  const deferrals = [
+    // the classifier prompt's own non-committal examples
+    "looking into it", "will check", "let me get back to you", "checking now", "one sec", "on it",
+    "확인해볼게요", "알아볼게요", "잠시만요", "체크해볼게요", "보고 말씀드릴게요", "나중에 볼게요", "회의 끝나고 볼게요", "넵 확인중입니다",
+    "확인 후 말씀드리겠습니다", "확인해보겠습니다", "알아보겠습니다", "찾아볼께요", "확인하고 알려드릴게요", "검토 후 회신드리겠습니다",
+    "확인 중입니다", "넵 확인할게요", "제가 볼게요", "여쭤보고 말씀드릴게요", "생각해볼게요", "고민 중이에요", "이따 볼게요",
+    "내일 알려드릴게요", "조금만 기다려 주세요", "처리 중입니다", "담당자한테 물어봤어요", "<@UA> 확인해볼게요 :pray:",
+    "I'll check", "let me check", "will get back to you", "gimme a sec", "hold on", "I'll let you know",
+    "아직 못 봤어요", "아직요", "아직 확인 못했어요", "확인 좀 할게요", "체크 좀 하겠습니다", "확인이 필요할 것 같아요",
+    "회의 중이에요", "외근 중이라서요", "보고 있어요", "알아보고 있어요", "잠만요", "기다려 주세요",
+    "팀장님 컨펌 받아야 해요", "not yet", "haven't checked yet", "not sure",
+    // nothing but a laugh / emoji / "?"
+    "ㅋㅋㅋ", "ㅎㅎ", ":joy:", "?", "ㅠㅠ",
+  ];
+  const answers = [
+    "그냥요.. 누가 보내길래 뭔 브랜든가해서", "그냥요", "그냥 궁금해서요", "몰라요", "글쎄요", "별거 아니에요", "넵", "네", "ㅇㅇ",
+    "네 내일 드릴게요", "오늘 오후 3시에 합니다", "확인했어요 문제 없습니다", "확인했습니다", "확인해봤는데 안 되네요", "네 머지하세요",
+    "내일 10시예요", "감사합니다", "해결됐어요", "반영했습니다", "진행해주세요", "검정색이요", "어제 보냈어요", "그건 민지님이 담당이에요",
+    "<https://example.com/doc|문서>", "yes", "sounds good", "will do", "it's in the dashboard",
+  ];
+  for (const t of deferrals) assert.equal(needsAnswerCheck(t), true, t);
+  for (const t of answers) assert.equal(needsAnswerCheck(t), false, t);
 });
 
 test("isAckReaction: any reaction except 'still looking' ones", () => {

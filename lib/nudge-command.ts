@@ -18,7 +18,17 @@ import {
   resolveTimezone,
   worksWithDailyCronOnly,
 } from "@/lib/schedule";
-import { DM_PREFIX, helpText, hourlyInactiveWarning, INTERVAL_NOTE, SECTION_NAMES } from "@/lib/messages";
+import {
+  APP_URL,
+  CONNECT_STEPS,
+  connectActions,
+  DM_PREFIX,
+  helpText,
+  hourlyInactiveWarning,
+  INTERVAL_NOTE,
+  linkButton,
+  SECTION_NAMES,
+} from "@/lib/messages";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Block = any;
@@ -81,26 +91,65 @@ function quickCommands(p: string): string {
   return `${c("목록")} 질문 보기 · ${c("새로고침")} 지금 확인 · ${c("9시")} · ${c("매시간")} · ${c("끄기")} · ${c("도움말")} 전체 사용법${tip}`;
 }
 
-async function statusReply(user: NudgeUser, p: string): Promise<Reply> {
+// "⚙️ 내 Nudge 설정" block (+ notes), shared by the 설정 reply and the App Home tab
+async function settingsBlocks(user: NudgeUser, p: string): Promise<Block[]> {
   const { line, notes } = await scheduleSummary(user, p);
   const counts = groupCounts(await loadVisible(user));
   const onOff = (v: boolean | undefined) => (v === false ? "꺼짐" : "켜짐");
   const lastCheck = user.lastPolledAt ? `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)}` : "아직 확인 전";
+  return [
+    section(
+      [
+        "*⚙️ 내 Nudge 설정*",
+        `• ⏰ 알림 시간: ${line}`,
+        `• ${SECTION_NAMES.incoming}: 알림 ${onOff(user.trackIncoming)} · 지금 ${counts.incoming}개`,
+        `• ${SECTION_NAMES.outgoing}: 알림 ${onOff(user.trackOutgoing)} · 지금 ${counts.outgoing}개`,
+        `_${lastCheck}_`,
+      ].join("\n")
+    ),
+    ...notes.map(context),
+  ];
+}
 
+async function statusReply(user: NudgeUser, p: string): Promise<Reply> {
+  return { text: "내 Nudge 설정", blocks: [...(await settingsBlocks(user, p)), context(quickCommands(p))] };
+}
+
+const header = (text: string): Block => ({ type: "header", text: { type: "plain_text", text, emoji: true } });
+
+// The App Home "홈" tab — what "앱 열기" shows. Not connected yet: what Nudge does and how to
+// connect it. Connected: their settings and what to type in the Nudge DM (`messagesUrl`).
+export async function homeView(user: NudgeUser | null, messagesUrl: string): Promise<Block> {
+  if (!user) {
+    return {
+      type: "home",
+      blocks: [
+        header("👋 Nudge 시작하기"),
+        section(
+          `Slack에서 놓친 질문을 모아 DM으로 알려줘요.\n• *${SECTION_NAMES.incoming}* — 누가 나에게 물어봤는데 아직 답하지 않은 질문\n• *${SECTION_NAMES.outgoing}* — 내가 물어봤는데 아직 답을 못 받은 질문`
+        ),
+        section(CONNECT_STEPS),
+        connectActions(),
+      ],
+    };
+  }
+  const c = (s: string) => `\`${s}\``;
   return {
-    text: "내 Nudge 설정",
+    type: "home",
     blocks: [
+      header("🔔 Nudge"),
+      ...(await settingsBlocks(user, DM_PREFIX)),
+      { type: "divider" },
       section(
         [
-          "*⚙️ 내 Nudge 설정*",
-          `• ⏰ 알림 시간: ${line}`,
-          `• ${SECTION_NAMES.incoming}: 알림 ${onOff(user.trackIncoming)} · 지금 ${counts.incoming}개`,
-          `• ${SECTION_NAMES.outgoing}: 알림 ${onOff(user.trackOutgoing)} · 지금 ${counts.outgoing}개`,
-          `_${lastCheck}_`,
+          "*💬 이렇게 써요* — *메시지* 탭(Nudge DM)에 바로 입력하세요",
+          `• ${c("설정")} 내 설정 · ${c("목록")} 질문 보기 · ${c("새로고침")} 지금 다시 확인`,
+          `• ${c("9시")} · ${c("9시 13시 18시")} · ${c("매시간")} · ${c("2시간마다")} 알림 시간 바꾸기`,
+          `• ${c("끄기")} · ${c("켜기")} 알림 끄고 켜기 · ${c("도움말")} 전체 사용법`,
         ].join("\n")
       ),
-      ...notes.map(context),
-      context(quickCommands(p)),
+      context("다른 채널에서는 앞에 `/nudge`를 붙여요. 예: `/nudge 목록`"),
+      { type: "actions", elements: [linkButton("💬 메시지 탭 열기", messagesUrl, true), linkButton("📖 사용법 보기", APP_URL)] },
     ],
   };
 }

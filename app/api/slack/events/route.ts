@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { createBoundedClient, verifySlackRequest } from "@/lib/slack";
-import { getAllUsers, getUser, updateUser } from "@/lib/db";
+import { getUser, updateUser } from "@/lib/db";
 import { parseDmText, runCommand, type Responder } from "@/lib/nudge-command";
-import { DM_PREFIX, NOT_INSTALLED_TEXT } from "@/lib/messages";
+import { DM_PREFIX, notInstalledReply } from "@/lib/messages";
+import { handleAppHomeOpened, workspaceBotToken, type AppHomeOpenedEvent } from "@/lib/home";
 
-// Lets people type "설정", "목록", "매일 9시" straight into the Nudge DM (bot event message.im).
+// Lets people type "설정", "목록", "매일 9시" straight into the Nudge DM (bot event message.im),
+// and shows the 홈 tab / first-run guide when they open Nudge (app_home_opened).
 // "새로고침" polls Slack inside waitUntil.
 export const maxDuration = 300;
 
@@ -49,14 +51,9 @@ async function handleDmMessage(event: MessageEvent, teamId: string | undefined) 
 
   const user = await getUser(userId);
   if (!user) {
-    // Someone opened the Nudge DM without installing: answer with any token from this workspace
-    const anyInstall = (await getAllUsers()).find((u) => !teamId || u.slackTeamId === teamId);
-    if (anyInstall) {
-      await createBoundedClient(anyInstall.botToken).chat.postMessage({
-        channel,
-        text: NOT_INSTALLED_TEXT(process.env.NEXT_PUBLIC_APP_URL || ""),
-      });
-    }
+    // Typed in the Nudge DM before connecting: explain how to start
+    const token = await workspaceBotToken(teamId);
+    if (token) await createBoundedClient(token).chat.postMessage({ channel, ...notInstalledReply() });
     return;
   }
   if (user.botDmChannel !== channel) await updateUser(userId, { botDmChannel: channel });
@@ -79,7 +76,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  let payload: { type?: string; challenge?: string; team_id?: string; event?: MessageEvent };
+  let payload: { type?: string; challenge?: string; team_id?: string; api_app_id?: string; event?: MessageEvent };
   try {
     payload = JSON.parse(body);
   } catch {
@@ -108,6 +105,12 @@ export async function POST(req: NextRequest) {
   if (isPersonTypingInNudgeDm) {
     waitUntil(
       handleDmMessage(event!, payload.team_id).catch((err) => console.error("DM command failed:", err))
+    );
+  } else if (payload.type === "event_callback" && event?.type === "app_home_opened") {
+    waitUntil(
+      handleAppHomeOpened(event as AppHomeOpenedEvent, payload.team_id, payload.api_app_id).catch((err) =>
+        console.error("app home failed:", err)
+      )
     );
   }
 

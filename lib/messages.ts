@@ -74,8 +74,36 @@ _다른 채널에서는 \`/nudge 설정\`처럼 앞에 \`/nudge\`를 붙이면 �
 
 지금 지난 7일 치 메시지를 확인하고 있어요. 잠시 뒤 \`목록\`을 입력해 보세요.`;
 
-export const NOT_INSTALLED_TEXT = (appUrl: string) =>
-  `아직 Nudge가 연결되지 않았어요. ${appUrl} 에서 *Add to Slack*을 눌러 설치해 주세요.`;
+// Public site: the landing page, and where people connect Nudge the first time (Add to Slack)
+export const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://clio-nudge.vercel.app";
+export const CONNECT_URL = `${APP_URL}/api/slack/oauth`;
+const APP_HOST = APP_URL.replace(/^https?:\/\//, "");
+
+export const linkButton = (text: string, url: string, primary = false) => ({
+  type: "button",
+  text: { type: "plain_text", text, emoji: true },
+  url,
+  ...(primary ? { style: "primary" } : {}),
+});
+
+export const CONNECT_STEPS = `*Nudge를 쓰려면 처음 한 번 연결이 필요해요*
+1. 아래 *Nudge 연결하기*를 눌러요 (<${APP_URL}|${APP_HOST}>에서 *Add to Slack*을 눌러도 같아요)
+2. 권한 화면에서 *허용*을 눌러요
+3. 끝! Nudge DM으로 안내가 오고, 평일 오전 8시에 확인할 질문을 보내드려요`;
+
+export const connectActions = () => ({
+  type: "actions",
+  elements: [linkButton("🔗 Nudge 연결하기", CONNECT_URL, true), linkButton("📖 사용법 보기", APP_URL)],
+});
+
+// Someone used Nudge (DM, /nudge, opened the app) before connecting it
+export const notInstalledReply = () => ({
+  text: `Nudge를 쓰려면 처음 한 번 연결이 필요해요: ${APP_URL}`,
+  blocks: [
+    { type: "section", text: { type: "mrkdwn", text: `👋 ${CONNECT_STEPS}` } },
+    connectActions(),
+  ],
+});
 
 export const hourlyInactiveWarning = (p: string) =>
   `⚠️ 지금은 알림이 *하루 한 번(오전 8시쯤)*만 나가고 있어서, 다른 시간이나 매시간 알림은 아직 오지 않아요. 관리자에게 알려 주세요. 그동안에도 ${cmd(p, "새로고침")}으로 언제든 직접 확인할 수 있어요.`;

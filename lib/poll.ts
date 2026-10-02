@@ -16,7 +16,7 @@ import {
 } from "@/lib/redis";
 import { AiUnavailableError, aiAvailable, classifyResponse, classifyUserMessage, summarizeQuestion } from "@/lib/ai";
 import { updateUser, type NudgeUser } from "@/lib/db";
-import { isAckReaction, isCcMention, isLikelyQuestion, mentionsUser, otherMentions } from "@/lib/question";
+import { isAckReaction, isCcMention, isLikelyQuestion, mentionsUser, needsAnswerCheck, otherMentions } from "@/lib/question";
 import { localParts, resolveTimezone } from "@/lib/schedule";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -30,6 +30,9 @@ const MAX_AI_CALLS_PER_STREAM = 6;    // per item, separately for thread replies
 const INCOMING_EXPIRE_MS = 14 * DAY_MS;
 const CONCURRENCY = 4;
 export const SUMMARY_VERSION = 5; // 5: topics always in Korean
+// Bump when the answer rules change: tracked items judged under older rules are read again
+// from the question once, so a reply misjudged back then gets another look
+export const JUDGE_VERSION = 1; // 1: a direct reply answers unless it only puts it off
 
 // Search queries and how many 100-result pages each may read per poll
 type QueryKey = "outgoing" | "mentions" | "with";
@@ -386,31 +389,50 @@ type Step = "answered" | "skipped" | "judged";
 // was judged (undefined: the budget ran out before the first one).
 async function walk(
   msgs: SlackMessage[],
-  step: (m: SlackMessage) => Promise<Step>,
+  step: (m: SlackMessage, rest: SlackMessage[]) => Promise<Step>,
   needsAi: (m: SlackMessage) => boolean
 ): Promise<{ answered: boolean; complete: boolean; through?: string }> {
   let aiCalls = 0;
   let through: string | undefined;
-  for (const m of msgs) {
+  for (const [i, m] of msgs.entries()) {
     if (needsAi(m) && aiCalls++ >= MAX_AI_CALLS_PER_STREAM) return { answered: false, complete: false, through };
-    if ((await step(m)) === "answered") return { answered: true, complete: true };
+    if ((await step(m, msgs.slice(i + 1))) === "answered") return { answered: true, complete: true };
     through = m.ts;
   }
   return { answered: false, complete: true, through };
 }
+
+// "넵" + "확인해볼게요" sent back to back are one reply: read someone's consecutive messages
+// (each within 5 minutes of the last) together
+const BURST_MS = 5 * 60_000;
+function burstOf(m: SlackMessage, rest: SlackMessage[]): string {
+  const parts = [contentOf(m)];
+  let last = m;
+  for (const x of rest) {
+    if (x.user !== m.user || (tsNum(x.ts!) - tsNum(last.ts!)) * 1000 > BURST_MS) break;
+    parts.push(contentOf(x));
+    last = x;
+  }
+  return parts.filter(Boolean).join(" ");
+}
+
+// Messages up to `judgedThrough` were already judged under older rules (see JUDGE_VERSION):
+// only the no-AI rules get another look at them, so a re-read costs no AI calls
+const judgedBefore = (judgedThrough?: string) => (m: SlackMessage) =>
+  !!judgedThrough && tsNum(m.ts!) <= tsNum(judgedThrough);
 
 // Thread replies get their own budget so a busy channel can't starve them. The checkpoint
 // only moves to where *both* streams were fully judged, and never on partial data.
 async function judgeStreams(
   f: FollowUp,
   c: Context,
-  step: (m: SlackMessage, inThread: boolean) => Promise<Step>,
+  step: (m: SlackMessage, inThread: boolean, rest: SlackMessage[]) => Promise<Step>,
   needsAi: (m: SlackMessage) => boolean
 ): Promise<Verdict> {
   if (c.gone) return { answered: false, gone: true };
-  const thread = await walk(c.thread, (m) => step(m, true), needsAi);
+  const thread = await walk(c.thread, (m, rest) => step(m, true, rest), needsAi);
   if (thread.answered) return { answered: true };
-  const flat = await walk(c.flat, (m) => step(m, false), needsAi);
+  const flat = await walk(c.flat, (m, rest) => step(m, false, rest), needsAi);
   if (flat.answered) return { answered: true };
   if (c.partial) return { answered: false, checkedTs: f.checkedTs };
 
@@ -427,7 +449,13 @@ async function judgeStreams(
 
 // My question: answered when someone else replies substantively ("알아볼게요" doesn't count),
 // a bot replies in the thread/DM, a file is shared back, or I say I sorted it out.
-async function checkOutgoing(ctx: Ctx, f: FollowUp, convType: ConvType, c?: Context): Promise<Verdict> {
+async function checkOutgoing(
+  ctx: Ctx,
+  f: FollowUp,
+  convType: ConvType,
+  c?: Context,
+  judgedThrough?: string
+): Promise<Verdict> {
   c ??= await loadContext(ctx, f, convType, f.checkedTs ?? f.threadTs);
   if (c.gone) return { answered: false, gone: true };
 
@@ -438,11 +466,15 @@ async function checkOutgoing(ctx: Ctx, f: FollowUp, convType: ConvType, c?: Cont
   if (acknowledged) return { answered: true };
 
   const relevant = (m: SlackMessage) => isRealMessage(m) && !isBot(m) && !!contentOf(m);
+  const old = judgedBefore(judgedThrough);
+  // Whoever I @mentioned owes the answer; a third party's "저도 궁금해요" isn't it
+  const addressed = otherMentions(f.originalMessage, ctx.me);
+  const owesAnswer = (m: SlackMessage) => convType === "im" || addressed.length === 0 || addressed.includes(m.user!);
 
   return judgeStreams(
     f,
     c,
-    async (msg, inThread) => {
+    async (msg, inThread, rest) => {
       if (!isRealMessage(msg)) return "skipped";
       const fromMe = msg.user === ctx.me;
       // A direct reply (thread or 1:1 DM) from a bot or with a file is the answer; in a busy
@@ -450,17 +482,27 @@ async function checkOutgoing(ctx: Ctx, f: FollowUp, convType: ConvType, c?: Cont
       const direct = inThread || convType === "im";
       if (!fromMe && direct && (isBot(msg) || hasFiles(msg))) return "answered";
       if (!relevant(msg)) return "skipped";
-      if (!fromMe) return (await classifyResponse(f.originalMessage, contentOf(msg))) === "answer" ? "answered" : "judged";
-      return (await classifyUserMessage(f.originalMessage, contentOf(msg))) === "self-resolved" ? "answered" : "judged";
+      const text = !fromMe && direct ? burstOf(msg, rest) : contentOf(msg);
+      // Their direct reply is the answer unless it only puts it off ("알아볼게요") or is just "ㅋㅋ"
+      if (!fromMe && direct && owesAnswer(msg) && !needsAnswerCheck(text)) return "answered";
+      if (old(msg)) return "skipped";
+      if (!fromMe) return (await classifyResponse(f.originalMessage, text)) === "answer" ? "answered" : "judged";
+      return (await classifyUserMessage(f.originalMessage, text)) === "self-resolved" ? "answered" : "judged";
     },
-    (m) => relevant(m) && !(m.user !== ctx.me && hasFiles(m))
+    (m) => !old(m) && relevant(m) && !(m.user !== ctx.me && hasFiles(m))
   );
 }
 
 // Someone's question to me: answered when I reply substantively (not "확인해볼게요"), send a
 // file, react with ✅/👍, someone else answers a question I was only cc'd on, or the asker says
 // it's sorted.
-async function checkIncoming(ctx: Ctx, f: FollowUp, convType: ConvType, c?: Context): Promise<Verdict> {
+async function checkIncoming(
+  ctx: Ctx,
+  f: FollowUp,
+  convType: ConvType,
+  c?: Context,
+  judgedThrough?: string
+): Promise<Verdict> {
   c ??= await loadContext(ctx, f, convType, f.checkedTs ?? f.threadTs);
   if (c.gone) return { answered: false, gone: true };
 
@@ -472,18 +514,24 @@ async function checkIncoming(ctx: Ctx, f: FollowUp, convType: ConvType, c?: Cont
   if (isCcMention(f.originalMessage, ctx.me)) otherMentions(f.originalMessage, ctx.me).forEach((u) => responders.add(u));
   const relevant = (m: SlackMessage) =>
     isHuman(m) && !!m.user && (responders.has(m.user) || m.user === f.askerId) && (!!contentOf(m) || hasFiles(m));
+  const old = judgedBefore(judgedThrough);
 
   return judgeStreams(
     f,
     c,
-    async (msg) => {
+    async (msg, inThread, rest) => {
       if (!relevant(msg)) return "skipped";
       if (msg.user === ctx.me && hasFiles(msg)) return "answered";
-      const content = contentOf(msg);
+      const mine = msg.user === ctx.me && (inThread || convType === "im");
+      const content = mine ? burstOf(msg, rest) : contentOf(msg);
+      // My reply in its thread or our 1:1 DM is the answer unless it only puts it off
+      // ("확인해볼게요") or is just "ㅋㅋ" — casual answers like "그냥요.." need no AI
+      if (mine && !needsAnswerCheck(content)) return "answered";
+      if (old(msg)) return "skipped";
       if (msg.user !== f.askerId) return (await classifyResponse(f.originalMessage, content)) === "answer" ? "answered" : "judged";
       return (await classifyUserMessage(f.originalMessage, content)) === "self-resolved" ? "answered" : "judged";
     },
-    (m) => relevant(m) && !(m.user === ctx.me && hasFiles(m))
+    (m) => !old(m) && relevant(m) && !(m.user === ctx.me && hasFiles(m))
   );
 }
 
@@ -529,14 +577,23 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
           return;
         }
         const convType = await resolveConvType(ctx, f.channel, f.convType);
+        // Judged under older rules: read again from the question (the new no-AI rules may settle
+        // it), without spending AI again on what was judged back then
+        const migrating = f.judgeVersion !== JUDGE_VERSION;
+        const g = migrating ? { ...f, checkedTs: undefined } : f;
+        const judgedThrough = migrating ? f.checkedTs : undefined;
         const verdict =
-          kind === "incoming" ? await checkIncoming(ctx, f, convType) : await checkOutgoing(ctx, f, convType);
+          kind === "incoming"
+            ? await checkIncoming(ctx, g, convType, undefined, judgedThrough)
+            : await checkOutgoing(ctx, g, convType, undefined, judgedThrough);
         if (verdict.answered || verdict.gone) {
           await drop(f);
           st.resolved++;
         } else {
           await updateFollowUp(kind, ctx.me, f.channel, f.threadTs, {
-            checkedTs: verdict.checkedTs,
+            // A partial re-read returns no checkpoint: keep the one we had
+            checkedTs: verdict.checkedTs ?? f.checkedTs,
+            judgeVersion: JUDGE_VERSION,
             convType,
             lastActivityAt: Date.now(),
           });
@@ -676,7 +733,7 @@ async function pollOutgoing(ctx: Ctx): Promise<void> {
     if (verdict.answered || verdict.gone) {
       await markSeen(ctx.me, itemId("outgoing", channel, ts), f.createdAt);
     } else {
-      await addFollowUp({ ...f, checkedTs: verdict.checkedTs });
+      await addFollowUp({ ...f, checkedTs: verdict.checkedTs, judgeVersion: JUDGE_VERSION });
       st.tracked++;
     }
   });
@@ -756,7 +813,7 @@ async function pollIncoming(ctx: Ctx): Promise<void> {
     if (verdict.answered || verdict.gone) {
       await markSeen(ctx.me, id, f.createdAt);
     } else {
-      await addFollowUp({ ...f, checkedTs: verdict.checkedTs });
+      await addFollowUp({ ...f, checkedTs: verdict.checkedTs, judgeVersion: JUDGE_VERSION });
       st.tracked++;
     }
   });
