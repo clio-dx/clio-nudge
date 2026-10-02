@@ -585,6 +585,13 @@ async function processCandidates(
       try {
         await handle(c);
       } catch (err) {
+        const code = slackErrorCode(err);
+        if (code && GONE_ERRORS.has(code)) {
+          // Deleted message / left channel: nothing to track, and don't hold the cursor back
+          const kind = runs.some((r) => r.key === "outgoing") ? "outgoing" : "incoming";
+          await markSeen(ctx.me, itemId(kind, c.match.channel!.id!, c.match.ts!), tsNum(c.match.ts!) * 1000).catch(() => {});
+          return;
+        }
         failed.add(c);
         ctx.stats.errors.push(`${c.match.channel?.id}:${c.match.ts}: ${err}`);
       }

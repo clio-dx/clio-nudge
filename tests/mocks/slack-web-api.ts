@@ -25,6 +25,7 @@ export const workspace = {
   channels: new Map<string, FakeChannel>(),
   users: new Map<string, { name: string; tz?: string }>(),
   messages: [] as FakeMessage[],
+  ghosts: [] as FakeMessage[], // deleted, but still in the search index
   posted: [] as { channel: string; text?: string; blocks?: unknown[] }[],
   updated: [] as { channel: string; ts: string; blocks?: unknown[] }[],
   calls: [] as string[],
@@ -34,6 +35,7 @@ export function resetSlack(): void {
   workspace.channels.clear();
   workspace.users.clear();
   workspace.messages.length = 0;
+  workspace.ghosts.length = 0;
   workspace.posted.length = 0;
   workspace.updated.length = 0;
   workspace.calls.length = 0;
@@ -59,7 +61,7 @@ function search(query: string): FakeMessage[] {
   const from = query.match(/from:<@(\w+)>/)?.[1];
   const withUser = query.match(/with:<@(\w+)>/)?.[1];
   const mention = query.replace(/(from|with):<@\w+>/g, "").match(/<@(\w+)>/)?.[1];
-  return workspace.messages.filter((m) => {
+  return [...workspace.messages, ...workspace.ghosts].filter((m) => {
     if (m.subtype && m.subtype !== "bot_message" && m.subtype !== "thread_broadcast") return false;
     const ch = workspace.channels.get(m.channel)!;
     if (from && m.user !== from) return false;

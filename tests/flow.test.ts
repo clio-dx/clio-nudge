@@ -264,6 +264,18 @@ test("someone else's answer settles a cc, but not a question asked to each of us
   assert.ok(!incoming.includes(`CGEN:${T.cc}`), "cc'd question answered by the addressee");
 });
 
+test("a search hit whose message is gone doesn't stall later polls", async () => {
+  const user = await install();
+  const ghost = msg({ channel: "DA", user: "UA", text: "이거 확인 가능할까요?", hoursAgo: 4 });
+  // Search still returns it (index lag), but the message was deleted before we could read it
+  const real = workspace.messages.find((m) => m.ts === ghost)!;
+  workspace.messages.splice(workspace.messages.indexOf(real), 1);
+  workspace.ghosts.push(real);
+  const stats = await pollUser(user);
+  assert.deepEqual(stats.errors, []);
+  assert.ok(!stats.incomplete.some((r) => r.startsWith("with:") || r.startsWith("mentions:")), JSON.stringify(stats.incomplete));
+});
+
 test("notes in my self-DM are never tracked", async () => {
   const user = await install();
   channel("DSELF", "im", [ME, ME]);
