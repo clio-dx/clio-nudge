@@ -547,7 +547,10 @@ test("opening Nudge before connecting shows how to start; after connecting, the 
 
   // I'm connected: settings, what to type, and a button to the Nudge DM
   await handleAppHomeOpened({ type: "app_home_opened", user: ME, channel: "DNUDGE", tab: "home" }, "T1", "A1");
-  const home = JSON.stringify(workspace.published.at(-1)!.view.blocks);
+  const homeBlocks = (workspace.published.at(-1)!.view.blocks ?? []) as { fields?: { text?: string }[] }[];
+  const cells = homeBlocks.flatMap((b) => b.fields ?? []);
+  assert.ok(cells.length > 0 && cells.every((f) => f.text?.trim()), "Slack rejects the whole view over an empty field");
+  const home = JSON.stringify(homeBlocks);
   assert.match(home, /내 Nudge 설정/);
   assert.match(home, /app_redirect\?app=A1&team=T1/);
   assert.equal(workspace.posted.filter((p) => p.channel === "DNUDGE").length, 0, "no greeting for connected users");

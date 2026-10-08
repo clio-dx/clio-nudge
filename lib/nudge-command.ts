@@ -87,6 +87,11 @@ function grid(cells: string[]): Block[] {
   return rows;
 }
 
+// Two equally long lists side by side, one row per line, so every line gets the gap
+function columns(left: string[], right: string[]): Block[] {
+  return grid(left.flatMap((text, i) => [text, right[i]]));
+}
+
 // After a schedule/timezone change, start from the next slot instead of catching up on one
 // that already passed (the reply announces "다음 알림 …").
 function skipPastSlots(user: NudgeUser): Pick<NudgeUser, "lastSlot"> {
@@ -190,7 +195,7 @@ export async function homeView(user: NudgeUser | null, messagesUrl: string): Pro
       ],
     };
   }
-  // One command per line, grouped in a grid — long "·" chains were hard to scan
+  // One command per row, two groups side by side — long "·" chains were hard to scan
   const c = (s: string) => `\`${s}\``;
   return {
     type: "home",
@@ -200,12 +205,14 @@ export async function homeView(user: NudgeUser | null, messagesUrl: string): Pro
       { type: "divider" },
       header("💬 이렇게 써요"),
       context("*메시지* 탭(Nudge DM)에 그대로 입력하세요. 다른 채널에서는 `/nudge 목록`처럼 앞에 `/nudge`를 붙여요."),
-      ...grid([
-        `*🔎 확인하기*\n${c("목록")} 지금 질문 보기\n${c("새로고침")} Slack 다시 확인\n${c("설정")} 내 설정 보기`,
-        `*⏰ 알림 시간*\n${c("9시")} 하루 한 번\n${c("9시 13시 18시")} 하루 여러 번\n${c("매시간")} 근무시간에 매시간`,
-        `*🔕 끄고 켜기*\n${c("끄기")} · ${c("켜기")} 모든 알림\n${c("받은질문 끄기")} 📥 알림만\n${c("보낸질문 끄기")} 📤 알림만`,
-        `*📌 그 밖에*\n${c("평일")} 주말엔 쉬기\n${c("매일")} 주말에도 받기\n${c("도움말")} 전체 사용법`,
-      ]),
+      ...columns(
+        ["*🔎 확인하기*", `${c("목록")} 지금 질문 보기`, `${c("새로고침")} Slack 다시 확인`, `${c("설정")} 내 설정 보기`],
+        ["*⏰ 알림 시간*", `${c("9시")} 하루 한 번`, `${c("9시 13시 18시")} 하루 여러 번`, `${c("매시간")} 근무시간에 매시간`]
+      ),
+      ...columns(
+        ["*🔕 끄고 켜기*", `${c("끄기")} · ${c("켜기")} 모든 알림`, `${c("받은질문 끄기")} 📥 알림만`, `${c("보낸질문 끄기")} 📤 알림만`],
+        ["*📌 그 밖에*", `${c("평일")} 주말엔 쉬기`, `${c("매일")} 주말에도 받기`, `${c("도움말")} 전체 사용법`]
+      ),
       { type: "actions", elements: [linkButton("💬 메시지 탭 열기", messagesUrl, true), linkButton("📖 사용법 보기", APP_URL)] },
     ],
   };
