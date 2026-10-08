@@ -14,7 +14,7 @@ import { CONNECT_URL } from "../lib/messages.ts";
 import { runTick } from "../lib/tick.ts";
 import { getUser, saveUser, updateUser, type NudgeUser } from "../lib/db.ts";
 import { addFollowUp, getSeen, getUserFollowUps, itemId, markSeen, redis, removeFollowUp } from "../lib/redis.ts";
-import { loadVisible, QUICK_ACTIONS, visibleIds, welcomeBlocks } from "../lib/digest.ts";
+import { buildDigestBlocks, loadVisible, PROMISED_LABEL, QUICK_ACTIONS, visibleIds, welcomeBlocks } from "../lib/digest.ts";
 import { currentSlot, localParts } from "../lib/schedule.ts";
 
 const ME = "UME";
@@ -577,6 +577,42 @@ test("the welcome DM is short and offers the list; the list says so while the fi
   const after = JSON.stringify(workspace.posted.at(-1)!.blocks);
   assert.match(after, /확인할 질문이 \d+개 있어요/);
   assert.equal(workspace.posted.at(-1)!.channel, "DNUDGE", "posted in the Nudge DM like a typed 목록");
+});
+
+test("a promise to get back is labelled in the list, also on items judged before the label existed", async () => {
+  const user = await install();
+  // I promised to check and reply; the asker only said thanks
+  channel("DP", "im", [ME, "UC"]);
+  const promisedToMe = msg({ channel: "DP", user: "UC", text: "동의서 수정 가능 여부만 확인 부탁 드립니다", hoursAgo: 30 });
+  msg({ channel: "DP", user: ME, text: "네 이해했습니다. CNS 측에 확인 후 회신드리겠습니다.", hoursAgo: 29.9 });
+  aiVerdicts.set("네 이해했습니다. CNS 측에 확인 후 회신드리겠습니다.", "non-committal");
+  msg({ channel: "DP", user: "UC", text: "네 감사합니다~", hoursAgo: 29.8 });
+  // Tracked by the previous version: checkpoint already past my promise, no label yet
+  channel("DR", "im", [ME, "UE"]);
+  const older = msg({ channel: "DR", user: "UE", text: "견적서 공유 가능할까요?", hoursAgo: 40 });
+  const later = msg({ channel: "DR", user: ME, text: "알아보고 말씀드릴게요", hoursAgo: 39 });
+  await addFollowUp({
+    kind: "incoming", userId: ME, channel: "DR", threadTs: older, originalMessage: "견적서 공유 가능할까요?", convType: "im",
+    askerId: "UE", checkedTs: later, judgeVersion: 1, createdAt: parseFloat(older) * 1000, lastRemindedAt: null, lastActivityAt: 0,
+  });
+
+  await pollUser(user);
+  const incoming = await getUserFollowUps(ME, "incoming");
+  assert.equal(incoming.find((f) => f.threadTs === promisedToMe)?.promised, true, "'확인 후 회신드리겠습니다' is a promise");
+  assert.equal(incoming.find((f) => f.threadTs === older)?.promised, true, "older items get the label on their re-read");
+  assert.ok(!aiCalls.includes("classify:알아보고 말씀드릴게요"), "…without asking the AI again");
+  assert.equal(incoming.find((f) => f.threadTs === T.unanswered)?.promised, undefined, "no reply, no label");
+  assert.equal((await getUserFollowUps(ME, "outgoing")).find((f) => f.threadTs === T.outDeferred)?.promised, true, "their '알아볼게요'");
+
+  const visible = await loadVisible((await getUser(ME))!);
+  const rows = JSON.stringify(buildDigestBlocks(visible, "https://clio.slack.com", { maxPerSection: 20 }));
+  assert.ok(rows.includes(PROMISED_LABEL.incoming) && rows.includes(PROMISED_LABEL.outgoing));
+
+  // A second poll keeps the label without re-reading anything
+  const before = aiCalls.length;
+  await pollUser((await getUser(ME))!);
+  assert.equal((await getUserFollowUps(ME, "incoming")).find((f) => f.threadTs === promisedToMe)?.promised, true);
+  assert.equal(aiCalls.filter((c) => c !== "summary").length, aiCalls.slice(0, before).filter((c) => c !== "summary").length);
 });
 
 test("notes in my self-DM are never tracked", async () => {

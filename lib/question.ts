@@ -150,12 +150,18 @@ const DEFERRALS = [
   /\b(on it|one sec|a sec|one moment|a moment|one min|a min|give me|gimme|hold on|hang on|bear with|brb|in a bit|later|tbd|not sure yet|checking|looking|asking|waiting|let you know|\d+\s?(sec|min)s?)\b/i,
 ];
 
+// "확인 후 회신드릴게요", "알아볼게요", "let me check": a promise to get back, not the answer
+export function looksLikeDeferral(text: string): boolean {
+  const cleaned = stripNoise(text);
+  return DEFERRALS.some((re) => re.test(cleaned));
+}
+
 // Does a reply need the AI to tell whether it answers the question? Only when it may be putting
 // the answer off, or carries nothing but a laugh/emoji/"?" ("ㅋㅋ", ":joy:"). Casual answers
 // ("그냥요.. 누가 보내길래", "몰라요", "넵") don't.
 export function needsAnswerCheck(text: string): boolean {
+  if (looksLikeDeferral(text)) return true;
   const cleaned = stripNoise(text);
-  if (DEFERRALS.some((re) => re.test(cleaned))) return true;
   const hasLink = /<https?:|https?:\/\//.test(text); // sharing a link is an answer
   return !hasLink && cleaned.replace(/[\s\p{P}\p{S}ㅋㅎㅠㅜ]/gu, "").length === 0;
 }

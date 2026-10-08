@@ -71,7 +71,7 @@ export function SlackDigestMock() {
           <div>
             <p className="font-bold">{SECTION_NAMES.outgoing} · 2</p>
             <Row label="#개발 - 배포 일정 확인" meta="2일 전" />
-            <Row label="이하은 - 회의록 공유" meta="1일 전" />
+            <Row label="이하은 - 회의록 공유" meta="1일 전 · 상대가 확인 중" />
           </div>
 
           <p className="mt-3 text-[13px] text-zinc-500">

@@ -20,6 +20,7 @@ export interface FollowUp {
   askerId?: string;            // incoming: who asked
   checkedTs?: string;          // latest reply ts already judged "not an answer"
   judgeVersion?: number;       // answer rules checkedTs was computed with (poll.ts JUDGE_VERSION)
+  promised?: boolean;          // whoever owes the answer said they'd get back ("확인 후 회신드릴게요")
   summary?: string;
   summaryVersion?: number;
   createdAt: number;

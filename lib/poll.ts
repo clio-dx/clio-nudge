@@ -16,7 +16,15 @@ import {
 } from "@/lib/redis";
 import { AiUnavailableError, aiAvailable, classifyResponse, classifyUserMessage, summarizeQuestion } from "@/lib/ai";
 import { updateUser, type NudgeUser } from "@/lib/db";
-import { isAckReaction, isCcMention, isLikelyQuestion, mentionsUser, needsAnswerCheck, otherMentions } from "@/lib/question";
+import {
+  isAckReaction,
+  isCcMention,
+  isLikelyQuestion,
+  looksLikeDeferral,
+  mentionsUser,
+  needsAnswerCheck,
+  otherMentions,
+} from "@/lib/question";
 import { localParts, resolveTimezone } from "@/lib/schedule";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -32,7 +40,7 @@ const CONCURRENCY = 4;
 export const SUMMARY_VERSION = 5; // 5: topics always in Korean
 // Bump when the answer rules change: tracked items judged under older rules are read again
 // from the question once, so a reply misjudged back then gets another look
-export const JUDGE_VERSION = 1; // 1: a direct reply answers unless it only puts it off
+export const JUDGE_VERSION = 2; // 1: a direct reply answers unless it only puts it off; 2: remember promises
 
 // Search queries and how many 100-result pages each may read per poll
 type QueryKey = "outgoing" | "mentions" | "with";
@@ -381,6 +389,7 @@ interface Verdict {
   answered: boolean;
   gone?: boolean;
   checkedTs?: string; // newest message judged "not an answer" — later polls start after it
+  promised?: boolean; // whoever owes the answer put it off with a promise ("확인 후 회신드릴게요")
 }
 
 type Step = "answered" | "skipped" | "judged";
@@ -470,8 +479,9 @@ async function checkOutgoing(
   // Whoever I @mentioned owes the answer; a third party's "저도 궁금해요" isn't it
   const addressed = otherMentions(f.originalMessage, ctx.me);
   const owesAnswer = (m: SlackMessage) => convType === "im" || addressed.length === 0 || addressed.includes(m.user!);
+  let promised = false;
 
-  return judgeStreams(
+  const verdict = await judgeStreams(
     f,
     c,
     async (msg, inThread, rest) => {
@@ -485,12 +495,22 @@ async function checkOutgoing(
       const text = !fromMe && direct ? burstOf(msg, rest) : contentOf(msg);
       // Their direct reply is the answer unless it only puts it off ("알아볼게요") or is just "ㅋㅋ"
       if (!fromMe && direct && owesAnswer(msg) && !needsAnswerCheck(text)) return "answered";
-      if (old(msg)) return "skipped";
-      if (!fromMe) return (await classifyResponse(f.originalMessage, text)) === "answer" ? "answered" : "judged";
+      // "알아볼게요" from them: not the answer yet, but shown as "상대가 확인 중" in the list
+      const promise = !fromMe && owesAnswer(msg) && looksLikeDeferral(text);
+      if (old(msg)) {
+        promised ||= promise;
+        return "skipped";
+      }
+      if (!fromMe) {
+        if ((await classifyResponse(f.originalMessage, text)) === "answer") return "answered";
+        promised ||= promise;
+        return "judged";
+      }
       return (await classifyUserMessage(f.originalMessage, text)) === "self-resolved" ? "answered" : "judged";
     },
     (m) => !old(m) && relevant(m) && !(m.user !== ctx.me && hasFiles(m))
   );
+  return promised ? { ...verdict, promised } : verdict;
 }
 
 // Someone's question to me: answered when I reply substantively (not "확인해볼게요"), send a
@@ -515,8 +535,9 @@ async function checkIncoming(
   const relevant = (m: SlackMessage) =>
     isHuman(m) && !!m.user && (responders.has(m.user) || m.user === f.askerId) && (!!contentOf(m) || hasFiles(m));
   const old = judgedBefore(judgedThrough);
+  let promised = false;
 
-  return judgeStreams(
+  const verdict = await judgeStreams(
     f,
     c,
     async (msg, inThread, rest) => {
@@ -527,12 +548,22 @@ async function checkIncoming(
       // My reply in its thread or our 1:1 DM is the answer unless it only puts it off
       // ("확인해볼게요") or is just "ㅋㅋ" — casual answers like "그냥요.." need no AI
       if (mine && !needsAnswerCheck(content)) return "answered";
-      if (old(msg)) return "skipped";
-      if (msg.user !== f.askerId) return (await classifyResponse(f.originalMessage, content)) === "answer" ? "answered" : "judged";
+      // My "확인 후 회신드릴게요": not the answer yet, but shown as "회신 약속함" in the list
+      const promise = msg.user === ctx.me && looksLikeDeferral(content);
+      if (old(msg)) {
+        promised ||= promise;
+        return "skipped";
+      }
+      if (msg.user !== f.askerId) {
+        if ((await classifyResponse(f.originalMessage, content)) === "answer") return "answered";
+        promised ||= promise;
+        return "judged";
+      }
       return (await classifyUserMessage(f.originalMessage, content)) === "self-resolved" ? "answered" : "judged";
     },
     (m) => !old(m) && relevant(m) && !(m.user === ctx.me && hasFiles(m))
   );
+  return promised ? { ...verdict, promised } : verdict;
 }
 
 // Is this message actually asking *me*?
@@ -594,6 +625,7 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
             // A partial re-read returns no checkpoint: keep the one we had
             checkedTs: verdict.checkedTs ?? f.checkedTs,
             judgeVersion: JUDGE_VERSION,
+            ...(verdict.promised ? { promised: true } : {}),
             convType,
             lastActivityAt: Date.now(),
           });
@@ -733,7 +765,7 @@ async function pollOutgoing(ctx: Ctx): Promise<void> {
     if (verdict.answered || verdict.gone) {
       await markSeen(ctx.me, itemId("outgoing", channel, ts), f.createdAt);
     } else {
-      await addFollowUp({ ...f, checkedTs: verdict.checkedTs, judgeVersion: JUDGE_VERSION });
+      await addFollowUp({ ...f, checkedTs: verdict.checkedTs, judgeVersion: JUDGE_VERSION, promised: verdict.promised });
       st.tracked++;
     }
   });
@@ -813,7 +845,7 @@ async function pollIncoming(ctx: Ctx): Promise<void> {
     if (verdict.answered || verdict.gone) {
       await markSeen(ctx.me, id, f.createdAt);
     } else {
-      await addFollowUp({ ...f, checkedTs: verdict.checkedTs, judgeVersion: JUDGE_VERSION });
+      await addFollowUp({ ...f, checkedTs: verdict.checkedTs, judgeVersion: JUDGE_VERSION, promised: verdict.promised });
       st.tracked++;
     }
   });

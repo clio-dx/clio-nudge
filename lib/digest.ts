@@ -73,6 +73,9 @@ function fallbackText(text: string): string {
 type Block = any;
 
 
+// Why a row is still listed after a reply: the answer was promised for later
+export const PROMISED_LABEL: Record<FollowUpKind, string> = { incoming: "회신 약속함", outgoing: "상대가 확인 중" };
+
 function sectionBlocks(
   kind: FollowUpKind,
   items: FollowUp[],
@@ -99,7 +102,9 @@ function sectionBlocks(
     const f = g.first;
     const link = getThreadLink(teamUrl, f.channel, f.threadTs, f.parentThreadTs);
     const label = escapeSlackText(f.summary || fallbackText(f.originalMessage));
-    const extra = g.members.length > 1 ? ` · 질문 ${g.members.length}개` : "";
+    const extra =
+      (g.members.length > 1 ? ` · 질문 ${g.members.length}개` : "") +
+      (g.members.some((m) => m.promised) ? ` · ${PROMISED_LABEL[kind]}` : "");
     blocks.push({
       type: "section",
       text: { type: "mrkdwn", text: `• <${link}|${label}>  _${formatAge(now - f.createdAt)}${extra}_` },
