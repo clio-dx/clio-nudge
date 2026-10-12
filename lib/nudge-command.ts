@@ -246,13 +246,13 @@ async function refresh(out: Responder, user: NudgeUser): Promise<void> {
   const stats = await settleBy(pollUser(user, started + 200_000), started + 240_000);
   if (!stats) {
     const stale = (await getUser(userId)) ?? user;
-    await out.replace(await listReply(stale, p, `확인할 메시지가 많아 아직 확인하고 있어요. 몇 분 뒤 \`${p}목록\`으로 다시 봐 주세요.`));
+    await out.replace(await listReply(stale, p, `확인할 메시지가 많아 아직 확인하고 있어요. 몇 분 뒤 \`${p}목록\`으로 다시 봐 주세요.`, true));
     return;
   }
   if (stats.skipped) {
     // Keep the list (and its buttons) on screen — a refresh button rewrites the digest in place
     const current = (await getUser(userId)) ?? user;
-    await out.replace(await listReply(current, p, `⏳ 이미 확인하고 있어요. 잠시 뒤 \`${p}목록\`으로 결과를 봐 주세요.`));
+    await out.replace(await listReply(current, p, `⏳ 이미 확인하고 있어요. 잠시 뒤 \`${p}목록\`으로 결과를 봐 주세요.`, true));
     return;
   }
   const found = stats.outgoing.tracked + stats.incoming.tracked;
@@ -300,7 +300,7 @@ export async function runCommand(stored: NudgeUser, cmd: Command, out: Responder
         const failed = "😵 확인하다가 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요.";
         // Prefer the current list with the error underneath, so nothing disappears from the screen
         await out
-          .replace(await listReply(user, p, failed))
+          .replace(await listReply(user, p, failed, true))
           .catch(() => out.replace({ text: failed }))
           .catch(() => {});
       }
