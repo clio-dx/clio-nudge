@@ -30,6 +30,7 @@ export const workspace = {
   updated: [] as { channel: string; ts: string; blocks?: unknown[] }[],
   published: [] as { user_id: string; view: { type?: string; blocks?: unknown[] } }[], // App Home views
   calls: [] as string[],
+  failing: new Set<string>(), // channels whose reads fail with a transient error
 };
 
 export function resetSlack(): void {
@@ -41,6 +42,7 @@ export function resetSlack(): void {
   workspace.updated.length = 0;
   workspace.published.length = 0;
   workspace.calls.length = 0;
+  workspace.failing.clear();
 }
 
 const n = (ts: string) => parseFloat(ts);
@@ -134,6 +136,7 @@ export class WebClient {
       cursor?: string;
     }) => {
       workspace.calls.push(`replies ${channel} ${ts}`);
+      if (workspace.failing.has(channel)) throw slackError("internal_error");
       const root = workspace.messages.find((m) => m.channel === channel && m.ts === ts);
       if (!root) throw slackError("thread_not_found");
       const thread =
@@ -170,6 +173,7 @@ export class WebClient {
       limit?: number;
     }) => {
       workspace.calls.push(`history ${channel}`);
+      if (workspace.failing.has(channel)) throw slackError("internal_error");
       if (!workspace.channels.has(channel)) throw slackError("channel_not_found");
       const top = workspace.messages
         .filter(

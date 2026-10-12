@@ -539,7 +539,7 @@ test("🔄 and 목록 list questions the digest is still giving time to; the dig
   assert.match(refreshed, /\\"l\\":1/, "완료 on these rows rebuilds a list, keeping the fresh rows");
 
   await runCommand((await getUser(ME))!, { type: "refresh" }, inPlace);
-  assert.match(JSON.stringify(shown.at(-1)), /달라진 질문은 없어요/);
+  assert.match(JSON.stringify(shown.at(-1)), /새로 찾거나 정리된 질문은 없어요/);
 
   await runCommand((await getUser(ME))!, { type: "list" }, inPlace);
   assert.ok(JSON.stringify(shown.at(-1)).includes(freshIn), "목록 shows them too");
@@ -552,6 +552,30 @@ test("🔄 and 목록 list questions the digest is still giving time to; the dig
   assert.match(digest, /📥 내가 답장해야 할 질문 · 4/);
   assert.ok(!digest.includes(freshIn) && !digest.includes(freshOut));
   assert.doesNotMatch(digest, /\\"l\\":1/, "완료 on a digest keeps it a digest");
+});
+
+test("🔄 that couldn't read some messages says so instead of 모두 처리했어요, and reads them next time", async () => {
+  await install({ botDmChannel: "DNUDGE" });
+  for (const id of workspace.channels.keys()) workspace.failing.add(id); // Slack hiccup on every read
+  const shown: { text?: string; blocks?: unknown[] }[] = [];
+  const inPlace = {
+    prefix: DM_PREFIX,
+    send: async (r: { text?: string; blocks?: unknown[] }) => void shown.push(r),
+    replace: async (r: { text?: string; blocks?: unknown[] }) => void shown.push(r),
+  };
+
+  await runCommand((await getUser(ME))!, { type: "refresh" }, inPlace);
+  const failed = JSON.stringify(shown.at(-1));
+  assert.doesNotMatch(failed, /모두 처리했어요/);
+  assert.match(failed, /아직 찾은 질문은 없어요/);
+  assert.match(failed, /메시지 \d+개는 일시적인 오류로 읽지 못했어요/);
+  assert.doesNotMatch(failed, /건\)/, "no bare count that reads like a number of questions");
+
+  workspace.failing.clear();
+  await runCommand((await getUser(ME))!, { type: "refresh" }, inPlace);
+  const retried = JSON.stringify(shown.at(-1));
+  assert.match(retried, /확인할 질문이 \d+개 있어요/, "the messages that failed are read on the next check");
+  assert.doesNotMatch(retried, /오류/);
 });
 
 test("a paid-only model on the free plan falls back to the free model instead of failing", async () => {

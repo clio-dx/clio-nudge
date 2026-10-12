@@ -203,15 +203,19 @@ function quickActionsBlock(): Block {
 export function buildDigestBlocks(
   v: Visible,
   teamUrl: string,
-  opts: { maxPerSection: number; now?: number; footer?: string; isList?: boolean; prefix?: string }
+  // partial: the check behind this list didn't read everything (the footer says what's left)
+  opts: { maxPerSection: number; now?: number; footer?: string; isList?: boolean; prefix?: string; partial?: boolean }
 ): Block[] {
   const now = opts.now ?? Date.now();
   const total = countGroups(v);
   const prefix = opts.prefix ?? "";
 
   if (total === 0) {
+    const empty = opts.partial
+      ? "🔍 *아직 찾은 질문은 없어요.* 다 확인하지 못해서 질문이 더 나올 수 있어요."
+      : "🎉 *모두 처리했어요!* 지금은 확인할 질문이 없어요.";
     return [
-      { type: "section", text: { type: "mrkdwn", text: "🎉 *모두 처리했어요!* 지금은 확인할 질문이 없어요." } },
+      { type: "section", text: { type: "mrkdwn", text: empty } },
       ...(opts.footer ? [{ type: "context", elements: [{ type: "mrkdwn", text: opts.footer }] }] : []),
       quickActionsBlock(),
     ];
