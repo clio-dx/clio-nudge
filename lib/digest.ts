@@ -1,7 +1,7 @@
 import { getUserFollowUps, itemId, type FollowUp, type FollowUpKind } from "@/lib/redis";
 import { escapeSlackText, getThreadLink } from "@/lib/slack";
 import type { NudgeUser } from "@/lib/db";
-import { SECTION_NAMES, WELCOME_NOTE, WELCOME_TEXT } from "@/lib/messages";
+import { REFRESH_LABEL, SECTION_NAMES, WELCOME_NOTE, WELCOME_TEXT } from "@/lib/messages";
 
 const HOUR_MS = 60 * 60 * 1000;
 // Give people time to reply before nagging
@@ -15,12 +15,20 @@ export interface Visible {
   outgoing: FollowUp[];
 }
 
-// Items old enough to show, oldest first, honoring the user's tracking toggles
-export async function loadVisible(user: NudgeUser, now = Date.now()): Promise<Visible> {
+// Items to show, oldest first, honoring the user's tracking toggles. Scheduled digests wait
+// MIN_AGE_MS before nagging; views people ask for (목록, 새로고침) pass `includeFresh` and show
+// everything found so far.
+export async function loadVisible(
+  user: NudgeUser,
+  now = Date.now(),
+  { includeFresh = false }: { includeFresh?: boolean } = {}
+): Promise<Visible> {
   const load = async (kind: FollowUpKind, enabled: boolean) => {
     if (!enabled) return [];
     const items = await getUserFollowUps(user.slackUserId, kind);
-    return items.filter((f) => now - f.createdAt >= MIN_AGE_MS[kind]).sort((a, b) => a.createdAt - b.createdAt);
+    return items
+      .filter((f) => includeFresh || now - f.createdAt >= MIN_AGE_MS[kind])
+      .sort((a, b) => a.createdAt - b.createdAt);
   };
   const [incoming, outgoing] = await Promise.all([
     load("incoming", user.trackIncoming !== false),
@@ -112,7 +120,13 @@ function sectionBlocks(
         type: "button",
         text: { type: "plain_text", text: "완료", emoji: true },
         action_id: `dismiss_${kind}_${i}`,
-        value: JSON.stringify({ k: kind, c: f.channel, t: g.members.map((m) => m.threadTs).slice(0, 40) }),
+        // l: rebuilt as a list (fresh questions included) after the click
+        value: JSON.stringify({
+          k: kind,
+          c: f.channel,
+          t: g.members.map((m) => m.threadTs).slice(0, 40),
+          ...(isList ? { l: 1 } : {}),
+        }),
       },
     });
   });
@@ -169,7 +183,7 @@ export function firstCheckBlocks(): Block[] {
     { type: "section", text: { type: "mrkdwn", text: "⏳ 아직 지난 7일 치 Slack을 확인하고 있어요. 잠시 뒤에 다시 볼까요?" } },
     {
       type: "actions",
-      elements: [button("📋 목록 다시 보기", QUICK_ACTIONS.list, true), button("🔄 지금 다시 확인", QUICK_ACTIONS.refresh)],
+      elements: [button("📋 목록 다시 보기", QUICK_ACTIONS.list, true), button(REFRESH_LABEL, QUICK_ACTIONS.refresh)],
     },
   ];
 }
@@ -179,7 +193,7 @@ function quickActionsBlock(): Block {
     type: "actions",
     elements: [
       button("⚙️ 내 설정", QUICK_ACTIONS.settings),
-      button("🔄 지금 다시 확인", QUICK_ACTIONS.refresh),
+      button(REFRESH_LABEL, QUICK_ACTIONS.refresh),
       button("📖 사용법", QUICK_ACTIONS.help),
     ],
   };

@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { SECTION_NAMES } from "@/lib/messages";
+import { REFRESH_LABEL, SECTION_NAMES } from "@/lib/messages";
 
 // A static "screenshot" of a Nudge digest DM, mirroring lib/digest.ts blocks
 
@@ -78,7 +78,7 @@ export function SlackDigestMock() {
             답장했거나 신경 쓰지 않아도 되면 <b>완료</b>를 눌러 주세요.
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            {["⚙️ 내 설정", "🔄 지금 다시 확인", "📖 사용법"].map((label) => (
+            {["⚙️ 내 설정", REFRESH_LABEL, "📖 사용법"].map((label) => (
               <span
                 key={label}
                 className="rounded border border-zinc-300 bg-white px-3 py-1 text-[13px] font-semibold text-[#1d1c1d] shadow-sm"
@@ -97,5 +97,5 @@ export function SlackDigestMock() {
 export const DIGEST_CALLOUTS = [
   "질문을 누르면 원래 메시지(DM·스레드)로 바로 이동해요.",
   "답장할 필요가 없으면 완료를 눌러 정리해요. 같은 DM·스레드에서 연달아 온 질문은 한 줄로 묶이고 함께 지워져요.",
-  "버튼 한 번으로 내 설정을 보거나, 지금 바로 다시 확인하거나, 사용법을 볼 수 있어요.",
+  "버튼 한 번으로 내 설정을 보거나, 방금 온 질문까지 지금 바로 확인하거나, 사용법을 볼 수 있어요.",
 ];

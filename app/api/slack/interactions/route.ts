@@ -9,13 +9,14 @@ import { parseCommand } from "@/lib/command";
 import { dmResponder, runCommand, type Reply, type Responder } from "@/lib/nudge-command";
 import { DM_PREFIX, SLASH_PREFIX } from "@/lib/messages";
 
-// "🔄 지금 다시 확인" polls Slack inside waitUntil
+// "🔄 최신 질문까지 확인" polls Slack inside waitUntil
 export const maxDuration = 300;
 
 interface DismissValue {
   k?: FollowUpKind;
   c?: string;
   t?: string[];
+  l?: 1; // the row sits in a list (목록/새로고침), not a scheduled digest
   // Buttons rendered before incoming tracking existed
   userId?: string;
   channel?: string;
@@ -127,13 +128,17 @@ async function handleDismiss(payload: BlockActionsPayload, user: NudgeUser, rawV
     })
   );
 
-  const [visible, teamUrl] = await Promise.all([loadVisible(user), teamUrlFor(user)]);
-  // The /nudge list view shows more rows than the scheduled digest
-  const isEphemeral = payload.container?.is_ephemeral === true;
+  // A list (also a digest rewritten by 🔄) stays a list: more rows, and questions still inside
+  // the digest's wait. Ephemeral messages are always /nudge lists (buttons from before `l` too).
+  const isList = value.l === 1 || payload.container?.is_ephemeral === true;
+  const [visible, teamUrl] = await Promise.all([
+    loadVisible(user, Date.now(), { includeFresh: isList }),
+    teamUrlFor(user),
+  ]);
   const prefix = payload.channel?.id === user.botDmChannel ? DM_PREFIX : SLASH_PREFIX;
   const blocks = buildDigestBlocks(visible, teamUrl, {
-    maxPerSection: isEphemeral ? 20 : 10,
-    isList: isEphemeral,
+    maxPerSection: isList ? 20 : 10,
+    isList,
     prefix,
   });
   await updateOriginal(payload, user, { text: digestFallbackText(visible), blocks });

@@ -3,8 +3,7 @@
 import { createBoundedClient, createSlackClient, getUserTimezone } from "@/lib/slack";
 import { getUser, updateUser, type NudgeUser } from "@/lib/db";
 import { pollUser } from "@/lib/poll";
-import { buildDigestBlocks, countGroups, firstCheckBlocks, formatAge, groupCounts, loadVisible, MIN_AGE_MS } from "@/lib/digest";
-import { getUserFollowUps } from "@/lib/redis";
+import { buildDigestBlocks, countGroups, firstCheckBlocks, formatAge, groupCounts, loadVisible } from "@/lib/digest";
 import { hourlyTriggerActive, settleBy, teamUrlFor } from "@/lib/tick";
 import { applyScheduleUpdate, parseCommand, type Command } from "@/lib/command";
 import {
@@ -140,7 +139,7 @@ function quickCommands(p: string): string {
   const c = (s: string) => `\`${p}${s}\``;
   // In the Nudge DM the commands above are already written without "/nudge"
   const tip = p === DM_PREFIX ? "" : "\n_Nudge와의 DM 창에서는 `/nudge` 없이 `설정`, `목록`처럼 입력해도 돼요._";
-  return `${c("목록")} 질문 보기 · ${c("새로고침")} 지금 확인 · ${c("9시")} · ${c("매시간")} · ${c("끄기")} · ${c("도움말")} 전체 사용법${tip}`;
+  return `${c("목록")} 질문 보기 · ${c("새로고침")} 최신 질문까지 확인 · ${c("9시")} · ${c("매시간")} · ${c("끄기")} · ${c("도움말")} 전체 사용법${tip}`;
 }
 
 // After this, an unfinished first scan no longer holds the list back (e.g. the AI stays rate-limited)
@@ -149,7 +148,8 @@ const FIRST_SCAN_GRACE_MS = 24 * 60 * 60 * 1000;
 // Schedule row, question counts row, then the warning if any — shared by the 설정 reply and the App Home tab
 async function settingsBlocks(user: NudgeUser, p: string): Promise<Block[]> {
   const s = await scheduleSummary(user, p);
-  const counts = groupCounts(await loadVisible(user));
+  // Same count as 목록, which lists questions still inside the digest's wait too
+  const counts = groupCounts(await loadVisible(user, Date.now(), { includeFresh: true }));
   const tracked = (name: string, on: boolean | undefined, count: number, turnOn: string) => {
     if (on === false) return `*${name}*\n알림 꺼짐 · \`${p}${turnOn}\`로 켜요`;
     return `*${name}*\n${user.lastPolledAt ? `지금 *${count}개*` : "찾고 있어요"}`;
@@ -206,7 +206,7 @@ export async function homeView(user: NudgeUser | null, messagesUrl: string): Pro
       header("💬 이렇게 써요"),
       context("*메시지* 탭(Nudge DM)에 그대로 입력하세요. 다른 채널에서는 `/nudge 목록`처럼 앞에 `/nudge`를 붙여요."),
       ...columns(
-        ["*🔎 확인하기*", `${c("목록")} 지금 질문 보기`, `${c("새로고침")} Slack 다시 확인`, `${c("설정")} 내 설정 보기`],
+        ["*🔎 확인하기*", `${c("목록")} 지금 질문 보기`, `${c("새로고침")} 최신 질문까지 확인`, `${c("설정")} 내 설정 보기`],
         ["*⏰ 알림 시간*", `${c("9시")} 하루 한 번`, `${c("9시 13시 18시")} 하루 여러 번`, `${c("매시간")} 근무시간에 매시간`]
       ),
       ...columns(
@@ -219,7 +219,8 @@ export async function homeView(user: NudgeUser | null, messagesUrl: string): Pro
 }
 
 async function listReply(user: NudgeUser, p: string, footer?: string): Promise<Reply> {
-  const [visible, teamUrl] = await Promise.all([loadVisible(user), teamUrlFor(user)]);
+  // Asked for now: show questions the digest is still giving time to (2h/24h) as well
+  const [visible, teamUrl] = await Promise.all([loadVisible(user, Date.now(), { includeFresh: true }), teamUrlFor(user)]);
   // The first scan after connecting hasn't got through the 7-day backlog yet (still running, or
   // cut short by the AI limit): an empty list there would wrongly say "모두 처리했어요"
   const firstScan =
@@ -234,16 +235,6 @@ async function listReply(user: NudgeUser, p: string, footer?: string): Promise<R
     text: "Nudge 질문 목록",
     blocks: buildDigestBlocks(visible, teamUrl, { maxPerSection: 20, footer: footer ?? lastCheck, isList: true, prefix: p }),
   };
-}
-
-// Tracked items still inside their grace period (2h / 24h), so not listed yet
-async function notYetVisible(user: NudgeUser): Promise<number> {
-  const now = Date.now();
-  const [incoming, outgoing] = await Promise.all([
-    user.trackIncoming !== false ? getUserFollowUps(user.slackUserId, "incoming") : [],
-    user.trackOutgoing !== false ? getUserFollowUps(user.slackUserId, "outgoing") : [],
-  ]);
-  return [...incoming, ...outgoing].filter((f) => now - f.createdAt < MIN_AGE_MS[f.kind ?? "outgoing"]).length;
 }
 
 // Poll now, then replace the "확인 중" message with the list
@@ -267,9 +258,11 @@ async function refresh(out: Responder, user: NudgeUser): Promise<void> {
   const resolved = stats.outgoing.resolved + stats.incoming.resolved + stats.incoming.expired;
   const deferred = stats.outgoing.deferred + stats.incoming.deferred;
   const fresh = (await getUser(userId)) ?? user;
-  const waiting = await notYetVisible(fresh);
-  const parts = [`방금 확인했어요 · 새로 찾은 질문 ${found}개 · 정리된 질문 ${resolved}개`];
-  if (waiting > 0) parts.push(`아직 알림 전인 질문 ${waiting}개는 조금 뒤에 목록에 나와요 (📥 2시간, 📤 24시간 후)`);
+  const parts = [
+    found + resolved === 0
+      ? "방금 확인했어요 · 달라진 질문은 없어요"
+      : `방금 확인했어요 · 새로 찾은 질문 ${found}개 · 정리된 질문 ${resolved}개`,
+  ];
   if (deferred > 0 || stats.incomplete.length > 0) parts.push("확인할 메시지가 많아 일부는 다음 확인 때 이어서 볼게요");
   if (stats.errors.length > 0) parts.push(`일부 대화는 확인하지 못했어요 (${stats.errors.length}건)`);
   await out.replace(await listReply(fresh, p, parts.join(" · ")));

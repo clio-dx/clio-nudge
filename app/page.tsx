@@ -26,7 +26,7 @@ const SCHEDULE_COMMANDS: [string, string][] = [
 const OTHER_COMMANDS: [string, string][] = [
   ["/nudge 설정", "내 알림 설정과 다음 알림 시간 보기"],
   ["/nudge 목록", "지금 확인할 질문 보기"],
-  ["/nudge 새로고침", "Slack을 지금 바로 다시 확인하고 목록 보기"],
+  ["/nudge 새로고침", "Slack을 지금 바로 다시 확인하고 방금 온 질문까지 보기"],
   ["/nudge 받은질문 끄기  ·  /nudge 받은질문 켜기", `${SECTION_NAMES.incoming} 알림 끄기 / 다시 켜기`],
   ["/nudge 보낸질문 끄기  ·  /nudge 보낸질문 켜기", `${SECTION_NAMES.outgoing} 알림 끄기 / 다시 켜기`],
   ["/nudge 도움말", "Slack 안에서 전체 사용법 보기"],

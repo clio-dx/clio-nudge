@@ -9,6 +9,10 @@ export const SECTION_NAMES = {
   outgoing: "📤 상대에게 답장 받아야 할 질문",
 } as const;
 
+// The 🔄 button under digests and lists: polls Slack now and lists everything found, without
+// the digest's 2h/24h wait
+export const REFRESH_LABEL = "🔄 최신 질문까지 확인";
+
 export const DM_PREFIX = "";
 export const SLASH_PREFIX = "/nudge ";
 
@@ -32,7 +36,8 @@ ${where}
 *🔎 확인하기*
 • ${cmd(p, "설정")} — 내 알림 설정과 다음 알림 시간
 • ${cmd(p, "목록")} — 지금 확인할 질문 전체
-• ${cmd(p, "새로고침")} — Slack을 지금 바로 다시 확인
+• ${cmd(p, "새로고침")} — Slack을 지금 바로 다시 확인하고 최신 질문까지 보기
+_자동 알림은 답할 시간(📥 2시간, 📤 24시간)을 드린 뒤 보내지만, 목록과 새로고침에는 방금 온 질문도 바로 나와요._
 
 *⏰ 알림 시간 정하기* _(기본: 평일 오전 8시)_
 • ${cmd(p, "9시")} — 오전 9시에 하루 한 번

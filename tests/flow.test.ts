@@ -131,7 +131,7 @@ test("first poll tracks exactly the unanswered questions in both directions", as
     ids(incoming),
     [
       `DA:${T.unanswered}`, // nobody answered
-      `DA:${T.tooFresh}`, // tracked, but younger than 2h → not shown yet
+      `DA:${T.tooFresh}`, // tracked, but younger than 2h → not in digests yet
       `DB:${T.deferredByMe}`, // I only said "확인해볼게요"
       `CGEN:${T.mentionOpen}`, // @mention without reply
       `CGEN:${T.threadQuestion}`, // reply in my own thread
@@ -515,6 +515,43 @@ test("🔄 on a digest keeps the list on screen when a check is already running"
   assert.match(last, /dismiss_/, "rows and 완료 buttons are still there");
   assert.match(last, /nudge_refresh/, "quick buttons are still there");
   assert.match(last, /이미 확인하고 있어요/);
+});
+
+test("🔄 and 목록 list questions the digest is still giving time to; the digest keeps waiting", async () => {
+  await install({ botDmChannel: "DNUDGE" });
+  const freshIn = msg({ channel: "DC", user: "UC", text: "오늘 회의 몇 시예요?", hoursAgo: 0.5 });
+  const freshOut = msg({ channel: "DE", user: ME, text: "내일 회의실 어디인가요?", hoursAgo: 3 });
+  const shown: { text?: string; blocks?: unknown[] }[] = [];
+  const inPlace = {
+    prefix: DM_PREFIX,
+    send: async (r: { text?: string; blocks?: unknown[] }) => void shown.push(r),
+    replace: async (r: { text?: string; blocks?: unknown[] }) => void shown.push(r),
+  };
+
+  await runCommand((await getUser(ME))!, { type: "refresh" }, inPlace);
+  const refreshed = JSON.stringify(shown.at(-1));
+  assert.ok(refreshed.includes(freshIn) && refreshed.includes(freshOut), "found just now → listed right away");
+  assert.match(refreshed, /📥 내가 답장해야 할 질문 · 5/);
+  assert.match(refreshed, /📤 상대에게 답장 받아야 할 질문 · 3/);
+  assert.match(refreshed, /방금 확인했어요 · 새로 찾은 질문 \d+개/);
+  assert.doesNotMatch(refreshed, /알림 전|조금 뒤에/, "nothing is held back for later");
+  assert.match(refreshed, /최신 질문까지 확인/);
+  assert.match(refreshed, /\\"l\\":1/, "완료 on these rows rebuilds a list, keeping the fresh rows");
+
+  await runCommand((await getUser(ME))!, { type: "refresh" }, inPlace);
+  assert.match(JSON.stringify(shown.at(-1)), /달라진 질문은 없어요/);
+
+  await runCommand((await getUser(ME))!, { type: "list" }, inPlace);
+  assert.ok(JSON.stringify(shown.at(-1)).includes(freshIn), "목록 shows them too");
+
+  // The scheduled digest still gives people 2h / 24h to reply first
+  const hour = localParts(Date.now(), "Asia/Seoul").hour;
+  await updateUser(ME, { schedule: { kind: "times", hours: [hour], weekdaysOnly: false } });
+  await runTick("digest");
+  const digest = JSON.stringify(workspace.posted.at(-1)?.blocks);
+  assert.match(digest, /📥 내가 답장해야 할 질문 · 4/);
+  assert.ok(!digest.includes(freshIn) && !digest.includes(freshOut));
+  assert.doesNotMatch(digest, /\\"l\\":1/, "완료 on a digest keeps it a digest");
 });
 
 test("a paid-only model on the free plan falls back to the free model instead of failing", async () => {
