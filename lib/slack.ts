@@ -138,6 +138,12 @@ export async function isDMOrMPIM(client: WebClient, channel: string): Promise<bo
   return ch?.is_mpim === true || ch?.is_im === true;
 }
 
+// Slack sends &, < and > in message text as entities; decode once its own <…> markup is gone
+// (escapeSlackText encodes them again for display)
+export function decodeSlackEntities(text: string): string {
+  return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
 export function escapeSlackText(text: string): string {
   // Escape special characters that break Slack mrkdwn links
   return text

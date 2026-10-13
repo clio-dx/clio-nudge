@@ -1,5 +1,5 @@
 import { getUserFollowUps, itemId, type FollowUp, type FollowUpKind } from "@/lib/redis";
-import { escapeSlackText, getThreadLink } from "@/lib/slack";
+import { decodeSlackEntities, escapeSlackText, getThreadLink } from "@/lib/slack";
 import type { NudgeUser } from "@/lib/db";
 import { REFRESH_LABEL, SECTION_NAMES, WELCOME_NOTE, WELCOME_TEXT } from "@/lib/messages";
 
@@ -69,11 +69,13 @@ export function formatAge(ms: number): string {
 }
 
 function fallbackText(text: string): string {
-  const plain = text
-    .replace(/<@[A-Z0-9]+(?:\|([^>]+))?>/g, (_, name) => (name ? `@${name}` : "@"))
-    .replace(/<#[A-Z0-9]+(?:\|([^>]+))?>/g, (_, name) => (name ? `#${name}` : "#"))
-    .replace(/<([^|>]+)\|([^>]+)>/g, "$2")
-    .replace(/<([^>]+)>/g, "$1");
+  const plain = decodeSlackEntities(
+    text
+      .replace(/<@[A-Z0-9]+(?:\|([^>]+))?>/g, (_, name) => (name ? `@${name}` : "@"))
+      .replace(/<#[A-Z0-9]+(?:\|([^>]+))?>/g, (_, name) => (name ? `#${name}` : "#"))
+      .replace(/<([^|>]+)\|([^>]+)>/g, "$2")
+      .replace(/<([^>]+)>/g, "$1")
+  );
   return plain.length > 60 ? `${plain.slice(0, 60)}…` : plain;
 }
 

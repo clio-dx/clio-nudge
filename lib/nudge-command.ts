@@ -218,8 +218,9 @@ export async function homeView(user: NudgeUser | null, messagesUrl: string): Pro
   };
 }
 
+// `footer`: null drops the "마지막 확인" line (the list's own hint shows instead).
 // `partial`: the check just run didn't get through everything, so an empty list can't say "모두 처리했어요"
-async function listReply(user: NudgeUser, p: string, footer?: string, partial = false): Promise<Reply> {
+async function listReply(user: NudgeUser, p: string, footer?: string | null, partial = false): Promise<Reply> {
   // Asked for now: show questions the digest is still giving time to (2h/24h) as well
   const [visible, teamUrl] = await Promise.all([loadVisible(user, Date.now(), { includeFresh: true }), teamUrlFor(user)]);
   // The first scan after connecting hasn't got through the 7-day backlog yet (still running, or
@@ -234,7 +235,13 @@ async function listReply(user: NudgeUser, p: string, footer?: string, partial = 
     : `마지막 확인 ${formatAge(Date.now() - user.lastPolledAt)}${firstScan ? " · 아직 다 보지 못해서 질문이 더 나올 수 있어요" : ""}`;
   return {
     text: "Nudge 질문 목록",
-    blocks: buildDigestBlocks(visible, teamUrl, { maxPerSection: 20, footer: footer ?? lastCheck, isList: true, prefix: p, partial }),
+    blocks: buildDigestBlocks(visible, teamUrl, {
+      maxPerSection: 20,
+      footer: footer === null ? undefined : (footer ?? lastCheck),
+      isList: true,
+      prefix: p,
+      partial,
+    }),
   };
 }
 
@@ -255,22 +262,15 @@ async function refresh(out: Responder, user: NudgeUser): Promise<void> {
     await out.replace(await listReply(current, p, `⏳ 이미 확인하고 있어요. 잠시 뒤 \`${p}목록\`으로 결과를 봐 주세요.`, true));
     return;
   }
-  const found = stats.outgoing.tracked + stats.incoming.tracked;
-  const resolved = stats.outgoing.resolved + stats.incoming.resolved + stats.incoming.expired;
-  const deferred = stats.outgoing.deferred + stats.incoming.deferred;
   // Errors are per message, except a whole search failing ("incoming: …") — never a question count
   const failedMessages = stats.errors.filter((e) => !/^(incoming|outgoing):/.test(e)).length;
   const fresh = (await getUser(userId)) ?? user;
-  // One line each: a "·" chain read "… 못했어요 (5건)" as five questions next to "질문이 없어요"
-  const lines = [
-    found + resolved === 0
-      ? "✅ 방금 확인했어요 · 새로 찾거나 정리된 질문은 없어요"
-      : `✅ 방금 확인했어요 · 새로 찾은 질문 ${found}개 · 정리된 질문 ${resolved}개`,
-  ];
-  if (deferred > 0 || stats.incomplete.length > 0) lines.push("⏳ 아직 다 보지 못한 메시지가 있어요 · 다음 확인 때 이어서 볼게요");
+  // Only failures are worth a line: "방금 확인했어요" and work left for the next check (routine
+  // under the AI limit) told people nothing they could act on
+  const lines: string[] = [];
   if (failedMessages > 0) lines.push(`⚠️ 메시지 ${failedMessages}개는 일시적인 오류로 읽지 못했어요 · 다음 확인 때 다시 읽을게요`);
   if (stats.errors.length > failedMessages) lines.push("⚠️ Slack 검색 중 오류가 나서 일부를 확인하지 못했어요 · 다음 확인 때 다시 볼게요");
-  await out.replace(await listReply(fresh, p, lines.join("\n"), lines.length > 1));
+  await out.replace(await listReply(fresh, p, lines.length > 0 ? lines.join("\n") : null, lines.length > 0));
 }
 
 export async function runCommand(stored: NudgeUser, cmd: Command, out: Responder): Promise<void> {

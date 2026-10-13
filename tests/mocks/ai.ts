@@ -2,7 +2,8 @@
 
 export const aiCalls: string[] = [];
 // Set to make the next N calls fail like a provider rate limit, or a model unavailable on the plan
-export const aiFailures = { rateLimited: 0, paidOnly: new Set<string>() };
+// delayAborted: a 429 whose retry-after wait the call timeout cut short
+export const aiFailures = { rateLimited: 0, delayAborted: 0, paidOnly: new Set<string>() };
 export const modelsUsed: string[] = [];
 export const temperatures: (number | undefined)[] = [];
 // Raw model output to return for a given reply / message text, ahead of the keyword rules
@@ -26,6 +27,10 @@ export async function generateText({
   temperatures.push(temperature);
   if (model?.id && aiFailures.paidOnly.has(model.id)) {
     throw new Error("GatewayInternalServerError: Free tier users do not have access to this model. Upgrade to paid credits");
+  }
+  if (aiFailures.delayAborted > 0) {
+    aiFailures.delayAborted--;
+    throw new DOMException("Delay was aborted", "AbortError");
   }
   if (aiFailures.rateLimited > 0) {
     aiFailures.rateLimited--;

@@ -112,6 +112,7 @@ beforeEach(() => {
   resetRedis();
   aiCalls.length = 0;
   aiFailures.rateLimited = 0;
+  aiFailures.delayAborted = 0;
   aiFailures.paidOnly.clear();
   modelsUsed.length = 0;
   temperatures.length = 0;
@@ -306,6 +307,15 @@ test("an AI rate limit postpones work instead of failing it, and nothing is lost
   assert.equal((await getUserFollowUps(ME, "outgoing")).length, 2);
 });
 
+test("a 429 retry wait cut short by the AI timeout pauses the AI like a rate limit, not as errors", async () => {
+  const user = await install();
+  aiFailures.delayAborted = 1; // production: "AbortError: Delay was aborted"
+  const first = await pollUser(user);
+  assert.deepEqual(first.errors, []);
+  assert.ok(first.incomplete.some((r) => r.startsWith("AI rate limit")), JSON.stringify(first.incomplete));
+  assert.ok(aiCalls.length === 0, "no more model calls while paused");
+});
+
 test("my casual reply in a group-DM thread settles the question, whatever the AI would say", async () => {
   const user = await install();
   const root = msg({ channel: "GMP", user: ME, text: "구매하겠냐구요", hoursAgo: 27 });
@@ -450,11 +460,27 @@ test("without AI, list rows show a Korean preview with names instead of raw ment
     lastRemindedAt: null,
     lastActivityAt: 0,
   });
+  // Slack sends "&" in message text as "&amp;"
+  const ampText = "인사팀 Q&amp;A 챗봇 등록됐나요?";
+  const amp = msg({ channel: "DG", user: ME, text: ampText, hoursAgo: 29 });
+  await addFollowUp({
+    kind: "outgoing",
+    userId: ME,
+    channel: "DG",
+    threadTs: amp,
+    originalMessage: ampText,
+    convType: "im",
+    createdAt: parseFloat(amp) * 1000,
+    lastRemindedAt: null,
+    lastActivityAt: 0,
+  });
   aiFailures.rateLimited = 1000; // model unavailable for this poll
   await pollUser(user);
-  const row = (await getUserFollowUps(ME, "outgoing")).find((f) => f.threadTs === q)!;
+  const rows = await getUserFollowUps(ME, "outgoing");
+  const row = rows.find((f) => f.threadTs === q)!;
   assert.match(row.summary!, /^하은 - @박상구\(부장\)_DX팀 님 일정 확인해 주실 수 있나요\?$/);
   assert.equal(row.summaryVersion, 0, "the AI topic is retried later");
+  assert.equal(rows.find((f) => f.threadTs === amp)!.summary, "하은 - 인사팀 Q&A 챗봇 등록됐나요?", "shown as &, not &amp;");
 });
 
 test("commands typed in the Nudge DM work without /nudge, and replies show them that way", async () => {
@@ -533,13 +559,14 @@ test("🔄 and 목록 list questions the digest is still giving time to; the dig
   assert.ok(refreshed.includes(freshIn) && refreshed.includes(freshOut), "found just now → listed right away");
   assert.match(refreshed, /📥 내가 답장해야 할 질문 · 5/);
   assert.match(refreshed, /📤 상대에게 답장 받아야 할 질문 · 3/);
-  assert.match(refreshed, /방금 확인했어요 · 새로 찾은 질문 \d+개/);
+  assert.doesNotMatch(refreshed, /방금 확인했어요|다 보지 못한/, "no routine status lines");
+  assert.match(refreshed, /완료\*를 눌러 주세요/, "the list's own hint instead");
   assert.doesNotMatch(refreshed, /알림 전|조금 뒤에/, "nothing is held back for later");
   assert.match(refreshed, /최신 질문까지 확인/);
   assert.match(refreshed, /\\"l\\":1/, "완료 on these rows rebuilds a list, keeping the fresh rows");
 
   await runCommand((await getUser(ME))!, { type: "refresh" }, inPlace);
-  assert.match(JSON.stringify(shown.at(-1)), /새로 찾거나 정리된 질문은 없어요/);
+  assert.ok(JSON.stringify(shown.at(-1)).includes(freshIn), "a second 🔄 keeps them listed");
 
   await runCommand((await getUser(ME))!, { type: "list" }, inPlace);
   assert.ok(JSON.stringify(shown.at(-1)).includes(freshIn), "목록 shows them too");

@@ -1,5 +1,5 @@
 import type { WebClient } from "@slack/web-api";
-import { createBoundedClient, getConversationLabel, getUserName, isDMOrMPIM, slackErrorCode } from "@/lib/slack";
+import { createBoundedClient, decodeSlackEntities, getConversationLabel, getUserName, isDMOrMPIM, slackErrorCode } from "@/lib/slack";
 import {
   acquireLock,
   addFollowUp,
@@ -875,9 +875,8 @@ async function fillSummaries(ctx: Ctx): Promise<void> {
     out = out
       .replace(/<#[A-Z0-9]+(?:\|([^>]+))?>/g, (_, n) => (n ? `#${n}` : "#채널"))
       .replace(/<([^|>]+)\|([^>]+)>/g, "$2")
-      .replace(/<([^>]+)>/g, "$1")
-      .replace(/\s+/g, " ")
-      .trim();
+      .replace(/<([^>]+)>/g, "$1");
+    out = decodeSlackEntities(out).replace(/\s+/g, " ").trim();
     return out.length > 50 ? `${out.slice(0, 50)}…` : out;
   };
 

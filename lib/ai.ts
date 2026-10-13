@@ -28,7 +28,8 @@ export function resumeAi(): void {
   useFallback = false;
 }
 
-const isRateLimit = (err: unknown) => /rate.?limit|429|quota/i.test(String(err));
+// "Delay was aborted": the SDK was waiting out a 429's retry-after when AI_TIMEOUT_MS cut it short
+const isRateLimit = (err: unknown) => /rate.?limit|429|quota|delay was aborted/i.test(String(err));
 const isNoAccess = (err: unknown) =>
   /do(es)? not have access|free tier|upgrade to paid|403|forbidden|not allowed|permission/i.test(String(err));
 
