@@ -1,27 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { createSlackClient, verifySlackRequest } from "@/lib/slack";
-import { getFollowUp, itemId, markSeen, removeFollowUp, type FollowUpKind } from "@/lib/redis";
 import { getUser, type NudgeUser } from "@/lib/db";
-import { buildDigestBlocks, digestFallbackText, loadVisible, QUICK_ACTIONS } from "@/lib/digest";
-import { teamUrlFor } from "@/lib/tick";
+import { QUICK_ACTIONS } from "@/lib/digest";
+import { dismissGroup, type DismissValue } from "@/lib/dismiss";
 import { parseCommand } from "@/lib/command";
 import { dmResponder, runCommand, type Reply, type Responder } from "@/lib/nudge-command";
 import { DM_PREFIX, SLASH_PREFIX } from "@/lib/messages";
 
 // "🔄 최신 질문까지 확인" polls Slack inside waitUntil
 export const maxDuration = 300;
-
-interface DismissValue {
-  k?: FollowUpKind;
-  c?: string;
-  t?: string[];
-  l?: 1; // the row sits in a list (목록/새로고침), not a scheduled digest
-  // Buttons rendered before incoming tracking existed
-  userId?: string;
-  channel?: string;
-  threadTs?: string;
-}
 
 interface BlockActionsPayload {
   user?: { id?: string };
@@ -110,38 +98,12 @@ async function handleDismiss(payload: BlockActionsPayload, user: NudgeUser, rawV
   } catch {
     return;
   }
-  const userId = user.slackUserId;
-  const kind: FollowUpKind = value.k === "incoming" ? "incoming" : "outgoing";
-  const channel = value.c ?? value.channel;
-  const timestamps = value.t ?? (value.threadTs ? [value.threadTs] : []);
-  if (!channel || timestamps.length === 0) return;
-
-  // Remove the whole group and remember it so the next poll doesn't bring it back. Items
-  // already resolved (or a retried click) skip the writes but still refresh the message,
-  // so a stale digest row never looks like a broken button.
-  const existing = await Promise.all(timestamps.map((ts) => getFollowUp(kind, userId, channel, ts)));
-  await Promise.all(
-    timestamps.map(async (ts, i) => {
-      if (!existing[i]) return;
-      await removeFollowUp(kind, userId, channel, ts);
-      await markSeen(userId, itemId(kind, channel, ts), existing[i]!.createdAt);
-    })
-  );
-
-  // A list (also a digest rewritten by 🔄) stays a list: more rows, and questions still inside
-  // the digest's wait. Ephemeral messages are always /nudge lists (buttons from before `l` too).
+  // A list (also a digest rewritten by 🔄) stays a list. Ephemeral messages are always
+  // /nudge lists (buttons from before `l` too).
   const isList = value.l === 1 || payload.container?.is_ephemeral === true;
-  const [visible, teamUrl] = await Promise.all([
-    loadVisible(user, Date.now(), { includeFresh: isList }),
-    teamUrlFor(user),
-  ]);
   const prefix = payload.channel?.id === user.botDmChannel ? DM_PREFIX : SLASH_PREFIX;
-  const blocks = buildDigestBlocks(visible, teamUrl, {
-    maxPerSection: isList ? 20 : 10,
-    isList,
-    prefix,
-  });
-  await updateOriginal(payload, user, { text: digestFallbackText(visible), blocks });
+  const reply = await dismissGroup(user, value, isList, prefix);
+  if (reply) await updateOriginal(payload, user, reply);
 }
 
 async function handleInteraction(payload: BlockActionsPayload) {

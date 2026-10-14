@@ -62,8 +62,11 @@ function group(items: FollowUp[], kind: FollowUpKind): Group[] {
 }
 
 export function formatAge(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "방금";
+  // "마지막 확인 방금" used to cover up to 59 minutes
+  if (minutes < 60) return `${minutes}분 전`;
   const hours = Math.floor(ms / HOUR_MS);
-  if (hours < 1) return "방금";
   if (hours < 48) return `${hours}시간 전`;
   return `${Math.floor(hours / 24)}일 전`;
 }

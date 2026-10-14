@@ -7,6 +7,7 @@ import { resetRedis } from "./mocks/redis.ts";
 import { aiCalls, aiFailures, aiVerdicts, modelsUsed, temperatures } from "./mocks/ai.ts";
 import { classifyResponse, classifyUserMessage, resumeAi } from "../lib/ai.ts";
 import { dmResponder, parseDmText, runCommand } from "../lib/nudge-command.ts";
+import { dismissGroup } from "../lib/dismiss.ts";
 import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
 import { JUDGE_VERSION, pollUser } from "../lib/poll.ts";
 import { handleAppHomeOpened } from "../lib/home.ts";
@@ -579,6 +580,27 @@ test("🔄 and 목록 list questions the digest is still giving time to; the dig
   assert.match(digest, /📥 내가 답장해야 할 질문 · 4/);
   assert.ok(!digest.includes(freshIn) && !digest.includes(freshOut));
   assert.doesNotMatch(digest, /\\"l\\":1/, "완료 on a digest keeps it a digest");
+});
+
+test("완료 on a digest's last row shows the questions still inside the wait, as 홈 and 목록 count them", async () => {
+  const user = await install({ botDmChannel: "DNUDGE" });
+  const freshIn = msg({ channel: "DC", user: "UC", text: "오늘 회의 몇 시예요?", hoursAgo: 0.5 });
+  await pollUser(user);
+  // Left: one question past the digest's 2h wait, one still inside it
+  for (const kind of ["incoming", "outgoing"] as const) {
+    for (const f of await getUserFollowUps(ME, kind)) {
+      if (f.threadTs !== T.unanswered && f.threadTs !== freshIn) await removeFollowUp(kind, ME, f.channel, f.threadTs);
+    }
+  }
+  assert.equal((await getUserFollowUps(ME, "incoming")).length, 2);
+
+  // The digest only showed the older one; 완료 on it
+  const reply = await dismissGroup((await getUser(ME))!, { k: "incoming", c: "DA", t: [T.unanswered] }, false, DM_PREFIX);
+  const shown = JSON.stringify(reply);
+  assert.doesNotMatch(shown, /모두 처리했어요/, "the 홈 tab still counts one");
+  assert.match(shown, /확인할 질문이 1개 있어요/);
+  assert.ok(shown.includes(freshIn) && !shown.includes(T.unanswered));
+  assert.doesNotMatch(shown, /\\"l\\":1/, "still a digest");
 });
 
 test("🔄 that couldn't read some messages says so instead of 모두 처리했어요, and reads them next time", async () => {
