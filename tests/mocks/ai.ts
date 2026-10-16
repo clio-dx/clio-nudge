@@ -36,6 +36,12 @@ export async function generateText({
     aiFailures.rateLimited--;
     throw new Error("Rate limit exceeded for model: this team's limit of 5 requests per minute was reached");
   }
+  if (prompt.includes('"promise" or "other"')) {
+    const message = quoted(prompt, "New message");
+    aiCalls.push(`promise:${message}`);
+    if (aiVerdicts.has(message)) return { text: aiVerdicts.get(message)! };
+    return { text: /드리겠|드릴게|I'll/.test(message) && !/께 전달/.test(message) ? "promise" : "other" };
+  }
   if (prompt.includes('"answer" or "non-committal"')) {
     const response = quoted(prompt, "Response received");
     aiCalls.push(`classify:${response}`);

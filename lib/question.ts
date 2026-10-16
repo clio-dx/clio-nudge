@@ -156,6 +156,51 @@ export function looksLikeDeferral(text: string): boolean {
   return DEFERRALS.some((re) => re.test(cleaned));
 }
 
+// "검토 의견 드리겠습니다", "확인해서 알려드릴게요", "I'll send it over": they owe me something
+// later. Narrower than DEFERRALS on purpose — this opens a new item, so "나중에 봐요" or
+// "알아볼게요" (nothing promised back) doesn't count.
+const PROMISES = [
+  /(의견|회신|답변|답장|답|공유|전달|자료|결과|피드백|리뷰|말씀|알려|보내|안내|연락|업데이트|정리|작성|취합|확인|검토)\s?(을\s?|를\s?)?(해\s?|해서\s?|하여\s?)?(다시\s?)?(드리겠|드릴\s?[게께]|드릴\s?예정|드리도록|줄\s?[게께]|주겠)/,
+  /\b(i'?ll|i will|will)\s+(\w+\s+){0,2}?(get back to you|send|share|let you know|follow up|update you|circle back)\b/i,
+];
+// "내일까지 드리겠습니다", "처리해 드릴게요": maybe a promise, the AI decides
+const LOOSE_PROMISE = /(드리겠|드릴\s?[게께]|드릴\s?예정)/;
+// …but "감사드리겠습니다", "검토 부탁드리겠습니다" are thanks and requests
+const NOT_PROMISES = /(감사|부탁|축하|인사|사과|양해|협조|요청)\s?(를\s?|을\s?)?드[리릴립]/;
+// "팀장님께 전달드리겠습니다" may be promised to someone else
+const THIRD_PARTY = /\S(님께|님한테|님에게|에게|한테)\s/;
+const SHORT_PROMISE = 60;
+export const containsLink = (text: string) => /<https?:|https?:\/\//.test(text);
+
+// A promise to send something back later. A message carrying a link is the delivery itself.
+export function looksLikePromise(text: string): boolean {
+  if (!text || containsLink(text)) return false;
+  const cleaned = stripNoise(text);
+  if (PROMISES.some((re) => re.test(cleaned))) return true;
+  return LOOSE_PROMISE.test(cleaned) && !NOT_PROMISES.test(cleaned);
+}
+
+// Only short, plain promises ("네 검토 의견 드리겠습니다") are taken as they are. The AI reads the
+// rest: no clear promise phrase, maybe to someone else, or a long message that may already
+// carry the answer ("결론부터 말씀드리겠습니다. …").
+export function promiseNeedsCheck(text: string): boolean {
+  const cleaned = stripNoise(text);
+  return (
+    !PROMISES.some((re) => re.test(cleaned)) ||
+    THIRD_PARTY.test(cleaned) ||
+    cleaned.replace(/\s+/g, " ").trim().length > SHORT_PROMISE
+  );
+}
+
+// "넵", "네 감사합니다~", "알겠습니다 부장님": nothing but an acknowledgement
+const ACK_WORDS =
+  /(네|넵|넴|넹|예|응|ㅇㅇ|ㅇㅋ|오케이|okay|ok|thanks|thank you|thx|감사합니다|감사해요|감사드립니다|고맙습니다|고마워요|알겠습니다|알겠어요|확인했습니다|확인했어요|좋습니다|좋아요|수고하셨습니다|수고하세요|\S+님)/gi;
+
+export function isBareAck(text: string): boolean {
+  const rest = stripNoise(text).replace(ACK_WORDS, " ").replace(/[\s\p{P}\p{S}ㅋㅎㅠㅜ]/gu, "");
+  return rest.length === 0;
+}
+
 // Does a reply need the AI to tell whether it answers the question? Only when it may be putting
 // the answer off, or carries nothing but a laugh/emoji/"?" ("ㅋㅋ", ":joy:"). Casual answers
 // ("그냥요.. 누가 보내길래", "몰라요", "넵") don't.

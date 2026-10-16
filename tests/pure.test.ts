@@ -13,7 +13,16 @@ import {
   worksWithDailyCronOnly,
   type Schedule,
 } from "../lib/schedule.ts";
-import { isAckReaction, isCcMention, isLikelyQuestion, needsAnswerCheck, otherMentions } from "../lib/question.ts";
+import {
+  isAckReaction,
+  isBareAck,
+  isCcMention,
+  isLikelyQuestion,
+  looksLikePromise,
+  needsAnswerCheck,
+  otherMentions,
+  promiseNeedsCheck,
+} from "../lib/question.ts";
 import { PRESETS } from "../lib/presets.ts";
 
 const HOUR = 3600_000;
@@ -360,6 +369,42 @@ test("needsAnswerCheck: only replies that put the answer off (or say nothing) go
   ];
   for (const t of deferrals) assert.equal(needsAnswerCheck(t), true, t);
   for (const t of answers) assert.equal(needsAnswerCheck(t), false, t);
+});
+
+test("looksLikePromise: someone owes me something later", () => {
+  // Plain, short promises: taken as they are
+  const clear = [
+    "안녕하세요 부장님~\n네 내용 참고하여 검토 의견 드리겠습니다.\n감사합니다.","확인해서 알려드릴게요", "자료 보내드리겠습니다",
+    "정리해서 공유드릴게요", "검토 후 회신드리겠습니다", "내일 다시 말씀드릴게요", "결과 나오면 연락드릴께요", "확인 드리겠습니다",
+    "I'll get back to you on this", "will send it over tomorrow",
+  ];
+  // Maybe promises: the AI decides
+  const unsure = [
+    "내일까지 드리겠습니다", "제가 처리해 드릴게요", "팀장님께 전달드리겠습니다",
+    "결론부터 말씀드리겠습니다. 조항 추가는 가능하고, 다만 법무 검토가 한 번 더 필요하다는 의견입니다. 자세한 내용은 첨부 문서를 참고해 주시면 될 것 같습니다.",
+  ];
+  const not = [
+    "감사드리겠습니다", "검토 부탁드리겠습니다", "확인 부탁드릴게요", "알아볼게요", "나중에 봐요", "네 알겠습니다",
+    "공유드립니다 <https://docs.google.com/x|문서>", "좋은 하루 보내세요", "감사 인사 드립니다",
+  ];
+  for (const t of clear) {
+    assert.equal(looksLikePromise(t), true, t);
+    assert.equal(promiseNeedsCheck(t), false, t);
+  }
+  for (const t of unsure) {
+    assert.equal(looksLikePromise(t), true, t);
+    assert.equal(promiseNeedsCheck(t), true, t);
+  }
+  for (const t of not) assert.equal(looksLikePromise(t), false, t);
+});
+
+test("isBareAck: acknowledgements that carry nothing", () => {
+  for (const t of ["넵", "네 감사합니다~", "알겠습니다 부장님", "네 알겠습니다.", "ok thanks", "넵넵 ㅎㅎ", ":pray: 감사합니다"]) {
+    assert.equal(isBareAck(t), true, t);
+  }
+  for (const t of ["검토해보니 가능합니다", "네 조항 추가로 진행하시죠", "아직 검토 중이에요", "예산 확인했어요"]) {
+    assert.equal(isBareAck(t), false, t);
+  }
 });
 
 test("isAckReaction: any reaction except 'still looking' ones", () => {

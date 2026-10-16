@@ -119,11 +119,12 @@ export class WebClient {
   };
 
   conversations = {
-    // Thread root first, then replies oldest-first; `oldest`/`inclusive` filter, `limit` + cursor page
+    // Thread root first, then replies oldest-first; `oldest`/`latest`/`inclusive` filter, `limit` + cursor page
     replies: async ({
       channel,
       ts,
       oldest,
+      latest,
       inclusive,
       limit = 1000,
       cursor,
@@ -131,6 +132,7 @@ export class WebClient {
       channel: string;
       ts: string;
       oldest?: string;
+      latest?: string;
       inclusive?: boolean;
       limit?: number;
       cursor?: string;
@@ -149,7 +151,9 @@ export class WebClient {
                 .sort((a, b) => n(a.ts) - n(b.ts)),
             ];
       const inRange = thread.filter(
-        (m) => !oldest || (inclusive ? n(m.ts) >= n(oldest) : n(m.ts) > n(oldest))
+        (m) =>
+          (!oldest || (inclusive ? n(m.ts) >= n(oldest) : n(m.ts) > n(oldest))) &&
+          (!latest || (inclusive ? n(m.ts) <= n(latest) : n(m.ts) < n(latest)))
       );
       const start = cursor ? parseInt(cursor) : 0;
       const page = inRange.slice(start, start + limit);

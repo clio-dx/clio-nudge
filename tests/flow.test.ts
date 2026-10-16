@@ -758,3 +758,79 @@ test("hourly mode only re-sends when something new shows up", async () => {
   await runTick("hourly-2");
   assert.equal(workspace.posted.length, sameDay ? 1 : 2, "new item → digest");
 });
+
+test("someone's promise to get back to me is tracked as a reply I'm waiting for", async () => {
+  const user = await install();
+  // I answered their question; they promised a review — nothing of mine is a question
+  channel("DQ", "im", [ME, "UC"]);
+  msg({ channel: "DQ", user: "UC", text: "동의서 문구 수정 가능할까요?", hoursAgo: 40 });
+  msg({ channel: "DQ", user: ME, text: "Google 측 확인 결과 문구 수정은 불가하고 조항 추가는 가능하다고 합니다.", hoursAgo: 30 });
+  const promise = msg({
+    channel: "DQ", user: "UC", text: "안녕하세요 부장님~\n네 내용 참고하여 검토 의견 드리겠습니다.\n감사합니다.", hoursAgo: 29.9,
+  });
+  msg({ channel: "DQ", user: "UC", text: "좋은 하루 되세요", hoursAgo: 29.89 }); // sent along with it
+  msg({ channel: "DQ", user: ME, text: "네 알겠습니다.", hoursAgo: 29.8 });
+  msg({ channel: "DQ", user: "UC", text: "넵", hoursAgo: 20 });
+
+  await pollUser(user);
+  const item = (await getUserFollowUps(ME, "outgoing")).find((f) => f.channel === "DQ");
+  assert.equal(item?.threadTs, promise);
+  assert.equal(item?.promiserId, "UC");
+  assert.equal(item?.promised, true);
+  assert.match(item?.about ?? "", /Google 측 확인 결과/, "my message it replies to, for the topic");
+  assert.ok(!aiCalls.some((c) => c.startsWith("promise:")), "a plain promise needs no AI");
+  assert.ok(!aiCalls.some((c) => c.includes("넵") || c.includes("네 알겠습니다")), "acks need no AI either");
+
+  const rows = JSON.stringify(buildDigestBlocks(await loadVisible((await getUser(ME))!), "https://clio.slack.com", { maxPerSection: 20 }));
+  assert.ok(rows.includes(PROMISED_LABEL.outgoing));
+
+  // Their actual review closes it
+  msg({ channel: "DQ", user: "UC", text: "검토해보니 조항 추가 방식으로 진행 가능할 것 같습니다", hoursAgo: 1 });
+  await pollUser((await getUser(ME))!);
+  assert.ok(!(await getUserFollowUps(ME, "outgoing")).some((f) => f.channel === "DQ"));
+  assert.ok((await getSeen(ME)).has(itemId("outgoing", "DQ", promise)), "and it doesn't come back");
+});
+
+test("a promise in reply to my own question stays one item: the question, labelled", async () => {
+  const user = await install();
+  channel("DQ", "im", [ME, "UC"]);
+  const question = msg({ channel: "DQ", user: ME, text: "견적서 최종본 공유 부탁드립니다", hoursAgo: 30 });
+  const promise = msg({ channel: "DQ", user: "UC", text: "확인 후 공유드리겠습니다", hoursAgo: 29.9 });
+  aiVerdicts.set("확인 후 공유드리겠습니다", "non-committal");
+
+  await pollUser(user);
+  const outgoing = (await getUserFollowUps(ME, "outgoing")).filter((f) => f.channel === "DQ");
+  assert.deepEqual(outgoing.map((f) => f.threadTs), [question]);
+  assert.equal(outgoing[0].promised, true);
+  assert.ok((await getSeen(ME)).has(itemId("outgoing", "DQ", promise)));
+});
+
+test("promises made to someone else, thanks, and unclear ones the AI turns down aren't tracked", async () => {
+  const user = await install();
+  // Group DM: a promise to someone else, by @mention or right after their message
+  msg({ channel: "GMP", user: ME, text: "이번 주 일정 정리했습니다", hoursAgo: 30 });
+  const toOther = msg({ channel: "GMP", user: "UB", text: "<@UA> 내일 회신드리겠습니다", hoursAgo: 29.9 });
+  msg({ channel: "GMP", user: "UA", text: "견적 정리했어요", hoursAgo: 29 });
+  const afterOther = msg({ channel: "GMP", user: "UB", text: "확인해서 알려드릴게요", hoursAgo: 28.9 });
+  // DMs: thanks, a maybe-promise to a third party (AI says no), and one the AI confirms
+  channel("DQ", "im", [ME, "UC"]);
+  msg({ channel: "DQ", user: ME, text: "요청하신 자료 보냈습니다", hoursAgo: 30 });
+  msg({ channel: "DQ", user: "UC", text: "감사드리겠습니다", hoursAgo: 29.9 });
+  const thirdParty = msg({ channel: "DQ", user: "UC", text: "팀장님께 전달드리겠습니다", hoursAgo: 29 });
+  channel("DR", "im", [ME, "UE"]);
+  msg({ channel: "DR", user: ME, text: "계약서 초안 첨부했습니다", hoursAgo: 30 });
+  const loose = msg({ channel: "DR", user: "UE", text: "내일까지 드리겠습니다", hoursAgo: 29.9 });
+
+  aiFailures.rateLimited = 1; // the first AI check hits the limit: postponed, not dropped
+  await pollUser(user);
+  resumeAi();
+  await pollUser((await getUser(ME))!);
+
+  const outgoing = (await getUserFollowUps(ME, "outgoing")).map((f) => `${f.channel}:${f.threadTs}`);
+  assert.ok(outgoing.includes(`DR:${loose}`), "the AI confirmed it, once the limit passed");
+  for (const ts of [toOther, afterOther]) assert.ok(!outgoing.includes(`GMP:${ts}`));
+  assert.ok(!outgoing.some((id) => id.startsWith("DQ:")));
+  assert.ok(aiCalls.includes(`promise:팀장님께 전달드리겠습니다`) && aiCalls.includes(`promise:내일까지 드리겠습니다`));
+  assert.ok(!aiCalls.some((c) => c.includes("감사드리겠습니다")), "thanks are never candidates");
+  assert.ok((await getSeen(ME)).has(itemId("outgoing", "DQ", thirdParty)));
+});

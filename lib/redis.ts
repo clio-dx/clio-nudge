@@ -18,6 +18,8 @@ export interface FollowUp {
   originalMessage: string;
   convType?: ConvType;
   askerId?: string;            // incoming: who asked
+  promiserId?: string;         // outgoing opened by someone's promise to me ("검토 의견 드리겠습니다"): who owes it
+  about?: string;              // promise items: my message they promised a reply to (for the topic)
   checkedTs?: string;          // latest reply ts already judged "not an answer"
   judgeVersion?: number;       // answer rules checkedTs was computed with (poll.ts JUDGE_VERSION)
   promised?: boolean;          // whoever owes the answer said they'd get back ("확인 후 회신드릴게요")

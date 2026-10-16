@@ -14,16 +14,27 @@ import {
   type FollowUp,
   type FollowUpKind,
 } from "@/lib/redis";
-import { AiUnavailableError, aiAvailable, classifyResponse, classifyUserMessage, summarizeQuestion } from "@/lib/ai";
+import {
+  AiUnavailableError,
+  aiAvailable,
+  classifyPromise,
+  classifyResponse,
+  classifyUserMessage,
+  summarizeQuestion,
+} from "@/lib/ai";
 import { updateUser, type NudgeUser } from "@/lib/db";
 import {
+  containsLink,
   isAckReaction,
+  isBareAck,
   isCcMention,
   isLikelyQuestion,
   looksLikeDeferral,
+  looksLikePromise,
   mentionsUser,
   needsAnswerCheck,
   otherMentions,
+  promiseNeedsCheck,
 } from "@/lib/question";
 import { localParts, resolveTimezone } from "@/lib/schedule";
 
@@ -36,6 +47,7 @@ const CHANNEL_FLAT_WINDOW_MS = 6 * HOUR_MS; // in channels, only nearby non-thre
 const MAX_NEW_PER_KIND = 60;          // new candidates examined per poll (rest continue next poll)
 const MAX_AI_CALLS_PER_STREAM = 6;    // per item, separately for thread replies and flat history
 const INCOMING_EXPIRE_MS = 14 * DAY_MS;
+const PROMISE_EXPIRE_MS = 14 * DAY_MS;
 const CONCURRENCY = 4;
 export const SUMMARY_VERSION = 5; // 5: topics always in Korean
 // Bump when the answer rules change: tracked items judged under older rules are read again
@@ -78,7 +90,7 @@ interface SearchMatch {
 
 export interface PollStats {
   skipped?: string;
-  outgoing: { searched: number; candidates: number; tracked: number; resolved: number; deferred: number };
+  outgoing: { searched: number; candidates: number; tracked: number; resolved: number; deferred: number; promises: number };
   incoming: {
     searched: { mentions: number; with: number };
     candidates: number;
@@ -108,7 +120,7 @@ interface Ctx {
 
 function emptyStats(): PollStats {
   return {
-    outgoing: { searched: 0, candidates: 0, tracked: 0, resolved: 0, deferred: 0 },
+    outgoing: { searched: 0, candidates: 0, tracked: 0, resolved: 0, deferred: 0, promises: 0 },
     incoming: {
       searched: { mentions: 0, with: 0 },
       candidates: 0,
@@ -513,6 +525,74 @@ async function checkOutgoing(
   return promised ? { ...verdict, promised } : verdict;
 }
 
+// Their promise to me ("검토 의견 드리겠습니다"): open until they follow up — a file or link, or a
+// real message that doesn't put it off again — or I say it's no longer needed. "넵"/"감사합니다",
+// and what they sent along with the promise, don't count.
+async function checkPromise(
+  ctx: Ctx,
+  f: FollowUp,
+  convType: ConvType,
+  c?: Context,
+  judgedThrough?: string
+): Promise<Verdict> {
+  c ??= await loadContext(ctx, f, convType, f.checkedTs ?? f.threadTs);
+  if (c.gone) return { answered: false, gone: true };
+
+  const owner = f.promiserId;
+  const relevant = (m: SlackMessage) => isHuman(m) && (m.user === owner || m.user === ctx.me) && !!contentOf(m);
+  const old = judgedBefore(judgedThrough);
+  // "검토 의견 드리겠습니다" + "감사합니다" sent back to back are one message
+  const burstEnd = { thread: tsNum(f.threadTs), flat: tsNum(f.threadTs) };
+
+  const verdict = await judgeStreams(
+    f,
+    c,
+    async (msg, inThread) => {
+      if (!relevant(msg)) return "skipped";
+      const text = contentOf(msg);
+      if (msg.user === owner) {
+        if (hasFiles(msg) || containsLink(msg.text ?? "")) return "answered";
+        const stream = inThread ? "thread" : "flat";
+        if ((tsNum(msg.ts!) - burstEnd[stream]) * 1000 <= BURST_MS) {
+          burstEnd[stream] = tsNum(msg.ts!);
+          return "skipped";
+        }
+      }
+      // "넵", or promising it again ("내일 드릴게요"): still waiting
+      if (old(msg) || isBareAck(text) || (msg.user === owner && looksLikePromise(text))) return "skipped";
+      if (msg.user === owner) {
+        if (!needsAnswerCheck(text)) return "answered";
+        return (await classifyResponse(f.originalMessage, text)) === "answer" ? "answered" : "judged";
+      }
+      return (await classifyUserMessage(f.originalMessage, text)) === "self-resolved" ? "answered" : "judged";
+    },
+    (m) => !old(m) && relevant(m) && !isBareAck(contentOf(m)) && !(m.user === owner && hasFiles(m))
+  );
+  return { ...verdict, promised: true };
+}
+
+// The latest message before `ts` from someone other than `exceptUser` (in the thread, or in the
+// channel/DM itself): who a promise was made to, and what about
+async function messageBefore(
+  ctx: Ctx,
+  channel: string,
+  ts: string,
+  rootTs: string | undefined,
+  exceptUser: string
+): Promise<SlackMessage | undefined> {
+  const pick = (msgs: SlackMessage[]) =>
+    msgs
+      .filter((m) => m.ts && tsNum(m.ts) < tsNum(ts) && isHuman(m) && m.user !== exceptUser)
+      .sort(byTs)
+      .at(-1);
+  if (!rootTs) {
+    const res = await ctx.slack.conversations.history({ channel, latest: ts, limit: 20, inclusive: false });
+    return pick(((res.messages ?? []) as SlackMessage[]).filter((m) => !(m.thread_ts && m.thread_ts !== m.ts)));
+  }
+  const res = await ctx.slack.conversations.replies({ channel, ts: rootTs, latest: ts, inclusive: false, limit: 200 });
+  return pick((res.messages ?? []) as SlackMessage[]);
+}
+
 // Someone's question to me: answered when I reply substantively (not "확인해볼게요"), send a
 // file, react with ✅/👍, someone else answers a question I was only cc'd on, or the asker says
 // it's sorted.
@@ -607,6 +687,11 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
           ctx.stats.incoming.expired++;
           return;
         }
+        if (f.promiserId && Date.now() - f.createdAt > PROMISE_EXPIRE_MS) {
+          await drop(f);
+          st.resolved++;
+          return;
+        }
         const convType = await resolveConvType(ctx, f.channel, f.convType);
         // Judged under older rules: read again from the question (the new no-AI rules may settle
         // it), without spending AI again on what was judged back then
@@ -616,7 +701,9 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
         const verdict =
           kind === "incoming"
             ? await checkIncoming(ctx, g, convType, undefined, judgedThrough)
-            : await checkOutgoing(ctx, g, convType, undefined, judgedThrough);
+            : f.promiserId
+              ? await checkPromise(ctx, g, convType, undefined, judgedThrough)
+              : await checkOutgoing(ctx, g, convType, undefined, judgedThrough);
         if (verdict.answered || verdict.gone) {
           await drop(f);
           st.resolved++;
@@ -654,6 +741,7 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
 interface Candidate {
   match: SearchMatch;
   pages: Partial<Record<QueryKey, number>>; // page per query it came from
+  promise?: boolean; // someone's promise to me, tracked as an outgoing item
 }
 
 // Merge runs into unique candidates, oldest first
@@ -702,7 +790,7 @@ async function processCandidates(
         }
         if (code && GONE_ERRORS.has(code)) {
           // Deleted message / left channel: nothing to track, and don't hold the cursor back
-          const kind = runs.some((r) => r.key === "outgoing") ? "outgoing" : "incoming";
+          const kind = c.promise || runs.some((r) => r.key === "outgoing") ? "outgoing" : "incoming";
           await markSeen(ctx.me, itemId(kind, c.match.channel!.id!, c.match.ts!), tsNum(c.match.ts!) * 1000).catch(() => {});
           return;
         }
@@ -786,20 +874,27 @@ async function pollIncoming(ctx: Ctx): Promise<void> {
   ];
   st.searched = { mentions: runs[0].items.length, with: runs[1].items.length };
 
-  const candidates = collect(runs).filter(({ match: m }) => {
-    const id = itemId("incoming", m.channel!.id!, m.ts!);
-    if (
-      !m.user ||
-      m.user === ctx.me ||
-      m.user === "USLACKBOT" ||
-      ctx.excluded.has(m.channel!.id!) ||
-      isPrivateNoteDM(ctx, m) ||
-      trackedIds.has(id) ||
-      ctx.seen.has(id) ||
-      !isLikelyQuestion(m.text || "")
-    ) {
+  // Promises to me ("검토 의견 드리겠습니다") turn up in the same searches. I'm the one waiting on
+  // those, so they become outgoing items — while that section is on.
+  const promisesOn = ctx.user.trackOutgoing !== false;
+  const trackedPromises = new Set(
+    promisesOn ? (await getUserFollowUps(ctx.me, "outgoing")).map((f) => itemId("outgoing", f.channel, f.threadTs)) : []
+  );
+
+  const candidates = collect(runs).filter((c) => {
+    const m = c.match;
+    const text = m.text || "";
+    if (!m.user || m.user === ctx.me || m.user === "USLACKBOT" || ctx.excluded.has(m.channel!.id!) || isPrivateNoteDM(ctx, m)) {
       return false;
     }
+    if (!isLikelyQuestion(text)) {
+      const id = itemId("outgoing", m.channel!.id!, m.ts!);
+      if (!promisesOn || !looksLikePromise(text) || trackedPromises.has(id) || ctx.seen.has(id)) return false;
+      c.promise = true;
+      return true;
+    }
+    const id = itemId("incoming", m.channel!.id!, m.ts!);
+    if (trackedIds.has(id) || ctx.seen.has(id)) return false;
     // Cheap pre-filter; thread-root ownership is checked once the thread is loaded
     const parent = parentFromPermalink(m.permalink);
     const plausible =
@@ -809,7 +904,8 @@ async function pollIncoming(ctx: Ctx): Promise<void> {
   });
   st.candidates = candidates.length;
 
-  st.deferred = await processCandidates(ctx, runs, candidates, async ({ match: m }) => {
+  st.deferred = await processCandidates(ctx, runs, candidates, async ({ match: m, promise }) => {
+    if (promise) return trackPromise(ctx, m);
     const channel = m.channel!.id!;
     const ts = m.ts!;
     const id = itemId("incoming", channel, ts);
@@ -851,6 +947,51 @@ async function pollIncoming(ctx: Ctx): Promise<void> {
   });
 }
 
+// Someone's promise to me becomes something I'm waiting on — unless it replies to a question of
+// mine, which is tracked on its own (and gets the "상대가 확인 중" label from this reply)
+async function trackPromise(ctx: Ctx, m: SearchMatch): Promise<void> {
+  const channel = m.channel!.id!;
+  const ts = m.ts!;
+  const text = m.text || "";
+  const convType = await resolveConvType(ctx, channel, convTypeFromMatch(m));
+  const parentThreadTs = parentFromPermalink(m.permalink);
+  const inThread = !!parentThreadTs && parentThreadTs !== ts;
+  const f: FollowUp = {
+    kind: "outgoing",
+    userId: ctx.me,
+    channel,
+    threadTs: ts,
+    parentThreadTs,
+    originalMessage: text,
+    convType,
+    promiserId: m.user,
+    promised: true,
+    createdAt: tsNum(ts) * 1000,
+    lastRemindedAt: null,
+    lastActivityAt: Date.now(),
+  };
+  const settle = () => markSeen(ctx.me, itemId("outgoing", channel, ts), f.createdAt);
+
+  // Made to me: in our DM, @me, or right after my message without @-ing anyone else
+  const prev = await messageBefore(ctx, channel, ts, inThread ? parentThreadTs : undefined, m.user!);
+  const mine = prev?.user === ctx.me ? prev : undefined;
+  const toMe = convType === "im" || mentionsUser(text, ctx.me) || (!!mine && otherMentions(text, ctx.me).length === 0);
+  if (!toMe || (mine && isLikelyQuestion(mine.text ?? ""))) return settle();
+  if (promiseNeedsCheck(text) && !(await classifyPromise(text, mine?.text))) return settle();
+
+  const c = await loadContext(ctx, f, convType, ts);
+  // Deleted, from a bot, or it carries the file it promised
+  if (c.gone || !c.question || !isHuman(c.question) || hasFiles(c.question)) {
+    if (c.gone || c.question) await settle();
+    return;
+  }
+  const verdict = await checkPromise(ctx, f, convType, c);
+  if (verdict.answered || verdict.gone) return settle();
+  await addFollowUp({ ...f, about: mine?.text?.slice(0, 300), checkedTs: verdict.checkedTs, judgeVersion: JUDGE_VERSION });
+  ctx.stats.outgoing.tracked++;
+  ctx.stats.outgoing.promises++;
+}
+
 // "#channel - topic" / "name - topic" / "asker (#channel) - topic"
 async function fillSummaries(ctx: Ctx): Promise<void> {
   const all = [
@@ -887,12 +1028,15 @@ async function fillSummaries(ctx: Ctx): Promise<void> {
       try {
         const label = await getConversationLabel(ctx.slack, f.channel);
         let prefix = label;
-        if (f.kind === "incoming" && f.askerId && f.convType !== "im") {
-          const asker = (await nameOf(f.askerId)).split(" ")[0];
-          if (asker) prefix = `${asker} (${label})`;
+        const other = f.kind === "incoming" ? f.askerId : f.promiserId;
+        if (other && f.convType !== "im") {
+          const name = (await nameOf(other)).split(" ")[0];
+          if (name) prefix = `${name} (${label})`;
         }
+        // A promise ("검토 의견 드리겠습니다") says little on its own: read it with my message before it
+        const source = f.about ? `${f.about}\n${f.originalMessage}` : f.originalMessage;
         let topic: string | null = null;
-        if (aiAvailable()) topic = await summarizeQuestion(f.originalMessage).catch(() => null);
+        if (aiAvailable()) topic = await summarizeQuestion(source).catch(() => null);
         await updateFollowUp(f.kind!, f.userId, f.channel, f.threadTs, topic
           ? { summary: `${prefix} - ${topic}`, summaryVersion: SUMMARY_VERSION }
           // version 0 → the AI topic is retried on a later poll

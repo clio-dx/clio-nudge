@@ -142,3 +142,26 @@ Reply with ONLY one word: "follow-up" or "self-resolved"`);
 
   return /^\W*self-resolved/.test(text.toLowerCase().trim()) ? "self-resolved" : "follow-up";
 }
+
+// "검토 의견 드리겠습니다": does this message promise the reader something later (an answer,
+// opinion, file, update)? `previous` is the reader's message it replies to, when there is one.
+export async function classifyPromise(message: string, previous?: string): Promise<boolean> {
+  const text = await generate(`You are analyzing a Slack conversation. Messages may be in Korean or English.
+Determine if the new message PROMISES the reader something they will send or tell later — an answer, opinion,
+review result, file, data or update — so the reader is now waiting on the sender.
+
+Promise examples: "검토 의견 드리겠습니다", "확인해서 알려드릴게요", "내일까지 자료 보내드리겠습니다", "정리해서 공유드릴게요",
+"I'll get back to you on this", "will send it over tomorrow"
+Not a promise:
+- Thanks, greetings or requests: "감사드립니다", "검토 부탁드리겠습니다", "잘 부탁드립니다"
+- A promise made to someone else: "팀장님께 전달드리겠습니다" (when the reader is not that person)
+- The message already delivers it: "결론부터 말씀드리겠습니다. 가능합니다", "공유드립니다 [link]"
+- Doing something that sends nothing back to the reader: "회의실 예약해 두겠습니다"
+When unsure, choose "other".
+${previous ? `\nReader's previous message: "${previous}"\n` : ""}
+New message: "${message}"
+
+Reply with ONLY one word: "promise" or "other"`);
+
+  return /^\W*promise/.test(text.toLowerCase().trim());
+}
