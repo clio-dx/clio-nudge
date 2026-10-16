@@ -29,6 +29,8 @@ export interface FollowUp {
   promised?: boolean;          // whoever owes the answer said they'd get back ("확인 후 회신드릴게요")
   summary?: string;
   summaryVersion?: number;
+  manual?: boolean;            // added with "Nudge가 놓친 질문": only replies after flaggedAt can close it
+  flaggedAt?: number;
   createdAt: number;
   lastRemindedAt: number | null;
   lastActivityAt: number;

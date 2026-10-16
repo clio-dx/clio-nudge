@@ -15,8 +15,7 @@ import { dismissGroup } from "../lib/dismiss.ts";
 import { dmResponder, runCommand } from "../lib/nudge-command.ts";
 import { parseCommand } from "../lib/command.ts";
 import { DM_PREFIX } from "../lib/messages.ts";
-
-const ME = "UME";
+import { buildWorkspace, channel, ME, msg } from "./fixtures.ts";
 
 async function install() {
   return saveUser({
@@ -32,6 +31,7 @@ async function install() {
 
 beforeEach(() => {
   resetSlack();
+  buildWorkspace();
   resetMemoryStore();
   aiCalls.length = 0;
   resumeAi();
@@ -146,4 +146,57 @@ test("the exports join feedback with the AI calls about the same message", async
     assert.equal(ex.contents[0].role, "user");
     assert.equal(ex.contents[1].role, "model");
   }
+});
+
+test("a question added by hand stays until something new answers it", async () => {
+  const user = await install();
+  channel("DQ1", "im", [ME, "UB"]);
+  // Already 'answered' by Nudge's rules: my plain reply, my 👍, and one older than 14 days
+  const replied = msg({ channel: "DQ1", user: "UB", text: "자료 공유 부탁드립니다", hoursAgo: 6 });
+  msg({ channel: "DQ1", user: ME, text: "네 알겠습니다", hoursAgo: 5.9 });
+  const reacted = msg({ channel: "DQ1", user: "UB", text: "회의 괜찮으세요?", hoursAgo: 5, reactions: [{ name: "+1", users: [ME] }] });
+  const old = msg({ channel: "DQ1", user: "UB", text: "견적 언제 가능할까요?", hoursAgo: 20 * 24 });
+  for (const ts of [replied, reacted, old]) {
+    await handleMissedQuestion({ userId: ME, channel: "DQ1", message: { ts, user: "UB", text: "q" } });
+  }
+  await pollUser((await getUser(ME))!);
+  const kept = (await getUserFollowUps(ME, "incoming")).filter((f) => f.channel === "DQ1").map((f) => f.threadTs).sort();
+  assert.deepEqual(kept, [replied, reacted, old].sort(), "the next poll keeps all three");
+
+  // A real answer afterwards settles it
+  msg({ channel: "DQ1", user: ME, text: "자료는 드라이브에 올렸어요", hoursAgo: -0.01 }); // after it was flagged
+  await pollUser((await getUser(ME))!);
+  assert.ok(!(await getUserFollowUps(ME, "incoming")).some((f) => f.threadTs === replied), "answered after it was added");
+  void user;
+});
+
+test("the shortcut on a question Nudge already tracks records nothing new", async () => {
+  const user = await install();
+  await pollUser(user);
+  const [tracked] = await getUserFollowUps(ME, "incoming");
+  await handleMissedQuestion({ userId: ME, channel: tracked.channel, message: { ts: tracked.threadTs, user: tracked.askerId, text: "x" } });
+  assert.equal((await allFeedback()).length, 0);
+});
+
+test("a double click on 완료 writes one record", async () => {
+  const user = await install();
+  await pollUser(user);
+  const [first] = await getUserFollowUps(ME, "incoming");
+  const value = { k: "incoming" as const, c: first.channel, t: [first.threadTs] };
+  await Promise.all([dismissGroup((await getUser(ME))!, value, true, DM_PREFIX), dismissGroup((await getUser(ME))!, value, true, DM_PREFIX)]);
+  assert.equal((await allFeedback()).filter((f) => f.label === "done").length, 1);
+});
+
+test("tuning data leaves out 완료 and messages whose feedback disagrees", async () => {
+  await install();
+  await handleMissedQuestion({ userId: ME, channel: "C7", message: { ts: "1790000000.000700", user: "UB", text: "이거 가능할까요?" } });
+  const { recordFeedback, feedbackFromItem } = await import("../lib/feedback.ts");
+  const [item] = await getUserFollowUps(ME, "incoming");
+  // Later the same person says it wasn't a question after all: only the newest counts
+  await new Promise((r) => setTimeout(r, 5));
+  await recordFeedback(feedbackFromItem(ME, item, "not_question", "modal"));
+  await recordFeedback(feedbackFromItem(ME, item, "done", "dismiss"), "done~x");
+  const lines = (await tuningJsonl()).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].contents[1].parts[0].text, "no", "the newest explicit feedback wins; 완료 isn't used");
 });

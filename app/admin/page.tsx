@@ -26,7 +26,7 @@ function runSummary(kind: string, s: Record<string, unknown>): string {
 export default async function AdminPage() {
   const admin = await requireAdmin();
   const [users, runs, ai, feedback] = await Promise.all([userRows(), recentRuns(150), aiStats(24), recentFeedback(30)]);
-  const o = await overview(users, runs);
+  const o = await overview(users);
   const names = new Map(users.map((u) => [u.id, u.name]));
 
   return (
@@ -37,7 +37,7 @@ export default async function AdminPage() {
         <Card label="추적 중 질문" value={o.incoming + o.outgoing} hint={`📥 ${o.incoming} · 📤 ${o.outgoing}`} />
         <Card label="24시간 알림 발송" value={o.digests24h} hint={`수집 ${o.polls24h}회 · 오류 ${o.pollErrors24h}`} />
         <Card label="AI 호출 24시간" value={ai.total} hint={`실패 ${ai.failed}`} />
-        <Card label="피드백" value={o.feedback} hint={o.lastTick ? `마지막 tick ${ago(o.lastTick.at)}` : "tick 기록 없음"} />
+        <Card label="피드백" value={o.feedback} hint={`완료 ${o.done}회 · ${o.lastTick ? `마지막 tick ${ago(o.lastTick.at)}` : "tick 기록 없음"}`} />
       </div>
 
       <Section title="사용자">

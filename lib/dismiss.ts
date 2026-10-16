@@ -41,7 +41,7 @@ export async function dismissGroup(
       if (!existing[i]) return;
       await removeFollowUp(kind, userId, channel, ts);
       await markSeen(userId, itemId(kind, channel, ts), existing[i]!.createdAt);
-      await recordFeedback(feedbackFromItem(userId, existing[i]!, "done", "dismiss"));
+      await recordFeedback(feedbackFromItem(userId, existing[i]!, "done", "dismiss"), `done~${userId}~${itemId(kind, channel, ts)}`);
     })
   );
 

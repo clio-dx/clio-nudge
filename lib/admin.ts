@@ -2,7 +2,7 @@
 import { getAllUsers, type NudgeUser } from "@/lib/db";
 import { getUserFollowUps, lastTick } from "@/lib/store";
 import { backend } from "@/lib/store/backend";
-import { recentRuns, type Run } from "@/lib/runs";
+import { recentRuns, runsSince } from "@/lib/runs";
 import { createBoundedClient } from "@/lib/slack";
 import { formatSchedule, resolveSchedule, resolveTimezone } from "@/lib/schedule";
 import { gcpFetch, PROJECT_ID } from "@/lib/gcp";
@@ -102,12 +102,13 @@ export interface Overview {
   polls24h: number;
   pollErrors24h: number;
   feedback: number;
+  done: number;
   lastTick: { slot: number; source: string; at: number } | null;
 }
 
-export async function overview(rows: UserRow[], runs: { data: Run }[]): Promise<Overview> {
+export async function overview(rows: UserRow[]): Promise<Overview> {
   const now = Date.now();
-  const recent = runs.filter((r) => now - r.data.at.getTime() < 24 * HOUR);
+  const recent = await runsSince(new Date(now - 24 * HOUR));
   return {
     users: rows.length,
     active24h: rows.filter((r) => r.lastPolledAt && now - r.lastPolledAt < 24 * HOUR).length,
@@ -119,15 +120,18 @@ export async function overview(rows: UserRow[], runs: { data: Run }[]): Promise<
     digests24h: recent.filter((r) => r.data.kind === "deliver" && Number(r.data.summary.sent ?? 0) > 0).length,
     polls24h: recent.filter((r) => r.data.kind === "poll").length,
     pollErrors24h: recent.filter((r) => r.data.kind === "poll" && Number(r.data.summary.errors ?? 0) > 0).length,
-    feedback: await backend.count("feedback"),
+    feedback: (await backend.count("feedback")) - (await backend.count("feedback", [["source", "==", "dismiss"]])),
+    done: await backend.count("feedback", [["source", "==", "dismiss"]]),
     lastTick: (await lastTick()) ?? null,
   };
 }
 
 export { recentRuns };
 
+// What people told us (완료 clicks are counted, not listed)
 export async function recentFeedback(limit = 100) {
-  return backend.query<Feedback>("feedback", { orderBy: ["at", "desc"], limit });
+  const rows = await backend.query<Feedback>("feedback", { orderBy: ["at", "desc"], limit: limit * 5 });
+  return rows.filter((r) => r.data.source !== "dismiss").slice(0, limit);
 }
 
 // ---------------------------------------------------------------------------

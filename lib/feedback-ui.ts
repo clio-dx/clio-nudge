@@ -1,11 +1,12 @@
 // Feedback in Slack: the "🙋 잘못 찾은 질문 알려주기" modal under digests and lists, the
 // "Nudge가 놓친 질문" message shortcut, and the `의견 …` command (lib/nudge-command.ts).
-import { createBoundedClient, createSlackClient } from "@/lib/slack";
+import { createBoundedClient } from "@/lib/slack";
 import { getUser, type NudgeUser } from "@/lib/db";
 import { addFollowUp, getFollowUp, itemId, markSeen, removeFollowUp, type FollowUp, type FollowUpKind } from "@/lib/store";
 import { buildDigestBlocks, digestFallbackText, digestGroups, FEEDBACK_ACTION, loadVisible } from "@/lib/digest";
 import { teamUrlFor } from "@/lib/tick";
 import { FEEDBACK_LABELS, feedbackFromItem, recordFeedback, type FeedbackLabel } from "@/lib/feedback";
+import { JUDGE_VERSION } from "@/lib/poll";
 import { DM_PREFIX, notInstalledReply, SLASH_PREFIX } from "@/lib/messages";
 
 export { FEEDBACK_ACTION };
@@ -23,16 +24,29 @@ interface ModalMeta {
 }
 
 const plain = (text: string) => ({ type: "plain_text", text, emoji: true });
+
+// views.open has to land inside Slack's 3 seconds: no retries, no long waits
+const createModalClient = (token: string) => {
+  const client = createBoundedClient(token);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const opts = client as any;
+  opts.timeout = 2500;
+  opts.retryConfig = { retries: 0 };
+  opts.rejectRateLimitedCalls = true;
+  return client;
+};
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-// private_metadata holds at most 3000 characters: drop groups (and timestamps) that don't fit
-function packMeta(meta: ModalMeta): string {
-  const m = { ...meta, groups: meta.groups.map((g) => ({ ...g, t: g.t.slice(0, 10) })) };
+// private_metadata holds at most 3000 characters: one timestamp per group (the rest is looked up
+// again on submit), and the groups that still don't fit are left out of the modal too
+function packMeta(meta: ModalMeta): ModalMeta {
+  const m = { ...meta, groups: meta.groups.slice(0, 100).map((g) => ({ ...g, t: g.t.slice(0, 1) })) };
   while (JSON.stringify(m).length > 2900 && m.groups.length > 0) m.groups.pop();
-  return JSON.stringify(m);
+  return m;
 }
 
-export function feedbackModal(meta: ModalMeta, labels: string[]): object {
+export function feedbackModal(full: ModalMeta, labels: string[]): object {
+  const meta = packMeta(full);
   const hasItems = meta.groups.length > 0;
   const reasons = (Object.keys(FEEDBACK_LABELS) as (keyof typeof FEEDBACK_LABELS)[]).map((k) => ({
     text: plain(FEEDBACK_LABELS[k]),
@@ -44,7 +58,7 @@ export function feedbackModal(meta: ModalMeta, labels: string[]): object {
     title: plain(hasItems ? "잘못 찾은 질문 알려주기" : "의견 보내기"),
     submit: plain("보내기"),
     close: plain("취소"),
-    private_metadata: packMeta(meta),
+    private_metadata: JSON.stringify(meta),
     blocks: [
       {
         type: "section",
@@ -65,7 +79,7 @@ export function feedbackModal(meta: ModalMeta, labels: string[]): object {
                 type: "multi_static_select",
                 action_id: "v",
                 placeholder: plain("질문 고르기"),
-                options: meta.groups.slice(0, 100).map((_, i) => ({ text: plain(cut(labels[i] || "질문", 75)), value: String(i) })),
+                options: meta.groups.map((_, i) => ({ text: plain(cut(labels[i] || "질문", 75)), value: String(i) })),
               },
             },
             {
@@ -138,7 +152,7 @@ export async function openFeedbackModal(payload: FeedbackButtonPayload): Promise
     prefix,
     groups: groups.map((g) => ({ k: g.kind, c: g.channel, t: g.threadTs })),
   };
-  await createSlackClient(user.botToken).views.open({
+  await createModalClient(user.botToken).views.open({
     trigger_id: payload.trigger_id,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     view: feedbackModal(meta, groups.map((g) => g.label)) as any,
@@ -174,22 +188,25 @@ export async function handleFeedbackSubmission({ userId, values, meta: rawMeta }
   const note = values.note?.v?.value?.trim() || undefined;
   const dismiss = (values.dismiss?.v?.selected_options ?? []).some((o) => o.value === "yes");
 
-  if (picked.length === 0 && note) {
-    await recordFeedback({ userId, label: "comment", source: "modal", note });
-    return;
-  }
+  // The modal carries one timestamp per row; the row's other questions are looked up again
+  const current = picked.length > 0 ? digestGroups(await loadVisible(user, Date.now(), { includeFresh: true })) : [];
+  let recorded = 0;
   for (const g of picked) {
-    for (const ts of g.t) {
+    const row = current.find((r) => r.kind === g.k && r.channel === g.c && r.threadTs.includes(g.t[0]));
+    for (const ts of row?.threadTs ?? g.t) {
       const item = await getFollowUp(g.k, userId, g.c, ts);
       if (!item) continue;
       await recordFeedback(feedbackFromItem(userId, item, label, "modal", note));
+      recorded++;
       if (dismiss) {
         await removeFollowUp(g.k, userId, g.c, ts);
         await markSeen(userId, itemId(g.k, g.c, ts), item.createdAt);
       }
     }
   }
-  if (dismiss && picked.length > 0) await redraw(user, meta).catch((err) => console.error("feedback redraw failed:", err));
+  // Nothing left to label (no pick, or resolved meanwhile): keep what they wrote
+  if (recorded === 0 && note) await recordFeedback({ userId, label: "comment", source: "modal", note });
+  if (dismiss && recorded > 0) await redraw(user, meta).catch((err) => console.error("feedback redraw failed:", String(err).slice(0, 300)));
 }
 
 // The digest or list the modal was opened from, without the questions just removed
@@ -252,10 +269,18 @@ export async function handleMissedQuestion(m: MissedQuestion): Promise<void> {
     createdAt: Math.floor(parseFloat(ts) * 1000),
     lastRemindedAt: null,
     lastActivityAt: Date.now(),
+    // Replies already there didn't settle it, by the person's own account: only later ones can
+    manual: true,
+    flaggedAt: Date.now(),
+    checkedTs: (Date.now() / 1000).toFixed(6),
+    judgeVersion: JUDGE_VERSION,
   };
-  const already = await getFollowUp(kind, m.userId, m.channel, ts);
-  if (!already) await addFollowUp(item);
-  await recordFeedback(feedbackFromItem(m.userId, item, "missed", "shortcut"));
+  const already =
+    (await getFollowUp("incoming", m.userId, m.channel, ts)) ?? (await getFollowUp("outgoing", m.userId, m.channel, ts));
+  if (!already) {
+    await addFollowUp(item);
+    await recordFeedback(feedbackFromItem(m.userId, item, "missed", "shortcut"));
+  }
   await ephemeral(
     m.responseUrl,
     already

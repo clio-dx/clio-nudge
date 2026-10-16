@@ -33,6 +33,11 @@ export async function recordRun(kind: string, summary: Record<string, unknown>, 
   }
 }
 
+// Everything since `since` (one range filter on `at`, no extra index)
+export async function runsSince(since: Date, limit = 5000) {
+  return backend.query<Run>("runs", { where: [["at", ">=", since]], orderBy: ["at", "desc"], limit });
+}
+
 export async function recentRuns(limit = 100, kind?: string) {
   return backend.query<Run>("runs", {
     ...(kind ? { where: [["kind", "==", kind]] } : {}),

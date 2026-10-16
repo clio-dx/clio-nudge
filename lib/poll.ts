@@ -483,7 +483,7 @@ async function checkOutgoing(
   if (c.gone) return { answered: false, gone: true };
 
   // 👍/✅/"넵" from the other side on my message is their answer (👀 "보는 중" isn't)
-  const acknowledged = c.question?.reactions?.some(
+  const acknowledged = !f.manual && c.question?.reactions?.some(
     (r) => r.name && isAckReaction(r.name) && r.users?.some((u) => u !== ctx.me)
   );
   if (acknowledged) return { answered: true };
@@ -609,7 +609,8 @@ async function checkIncoming(
   if (c.gone) return { answered: false, gone: true };
 
   // My 👍/✅/"넵" on the question means handled (👀 "보는 중" doesn't)
-  const reacted = c.question?.reactions?.some((r) => r.name && isAckReaction(r.name) && r.users?.includes(ctx.me));
+  // A hand-added question had its reactions already when the person said it's still open
+  const reacted = !f.manual && c.question?.reactions?.some((r) => r.name && isAckReaction(r.name) && r.users?.includes(ctx.me));
   if (reacted) return { answered: true };
 
   const responders = new Set([ctx.me]);
@@ -684,7 +685,8 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
           await drop(f);
           return;
         }
-        if (kind === "incoming" && Date.now() - f.createdAt > INCOMING_EXPIRE_MS) {
+        // Hand-added questions count from when they were added (they may be old messages)
+        if (kind === "incoming" && Date.now() - (f.flaggedAt ?? f.createdAt) > INCOMING_EXPIRE_MS) {
           await drop(f);
           ctx.stats.incoming.expired++;
           return;
