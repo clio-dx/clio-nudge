@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { GCP_URL, isFrozen } from "@/lib/migration";
 
 // Keep in sync with slack-app-manifest.json
 const BOT_SCOPES = ["chat:write", "im:write", "im:history", "commands"];
@@ -16,6 +17,9 @@ const USER_SCOPES = [
 ];
 
 export async function GET() {
+  // Moved to GCP: connect there, so the install lands in the new database
+  if (await isFrozen()) return NextResponse.redirect(`${GCP_URL}/api/slack/oauth`);
+
   const clientId = process.env.SLACK_CLIENT_ID;
   const redirectUri = `${process.env.NEXT_PUBLIC_APP_URL}/api/slack/oauth/callback`;
 

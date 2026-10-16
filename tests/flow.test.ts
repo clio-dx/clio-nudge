@@ -8,6 +8,7 @@ import { aiCalls, aiFailures, aiVerdicts, modelsUsed, temperatures } from "./moc
 import { classifyResponse, classifyUserMessage, resumeAi } from "../lib/ai.ts";
 import { dmResponder, parseDmText, runCommand } from "../lib/nudge-command.ts";
 import { firstReport } from "../lib/first-report.ts";
+import { buildExport, isExportLocked, isFrozen, setMigrationState } from "../lib/migration.ts";
 import { dismissGroup } from "../lib/dismiss.ts";
 import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
 import { JUDGE_VERSION, pollUser } from "../lib/poll.ts";
@@ -883,4 +884,30 @@ test("promises made to someone else, thanks, and unclear ones the AI turns down 
   assert.ok(aiCalls.includes(`promise:팀장님께 전달드리겠습니다`) && aiCalls.includes(`promise:내일까지 드리겠습니다`));
   assert.ok(!aiCalls.some((c) => c.includes("감사드리겠습니다")), "thanks are never candidates");
   assert.ok((await getSeen(ME)).has(itemId("outgoing", "DQ", thirdParty)));
+});
+
+test("the GCP move exports every user, question, seen id and one-time flag, and freezing is reversible", async () => {
+  const user = await install({ botDmChannel: "DNUDGE" });
+  await pollUser(user);
+  await markSeen(ME, "incoming:DX:1700000000.000100", 1700000000000);
+  await redis.set(`nudge:onboarded:U_NEW`, 1, { nx: true });
+
+  const data = await buildExport();
+  assert.equal(data.users.length, 1);
+  assert.equal(data.users[0].slackUserId, ME);
+  const tracked = (await getUserFollowUps(ME, "incoming")).length + (await getUserFollowUps(ME, "outgoing")).length;
+  assert.ok(tracked > 0);
+  assert.equal(data.followups.length, tracked);
+  assert.ok(data.followups.every((f) => f.kind === "incoming" || f.kind === "outgoing"));
+  assert.equal(data.seen[ME]["incoming:DX:1700000000.000100"], 1700000000000, "seen ids keep their message time");
+  assert.deepEqual(data.flags, ["nudge:onboarded:U_NEW"]);
+
+  assert.equal(await isFrozen(), false);
+  await setMigrationState("freeze");
+  await setMigrationState("lock");
+  assert.equal(await isFrozen(), true);
+  assert.equal(await isExportLocked(), true);
+  await setMigrationState("unfreeze"); // rollback
+  assert.equal(await isFrozen(), false);
+  assert.equal(await isExportLocked(), false);
 });

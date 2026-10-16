@@ -76,9 +76,16 @@ export class Redis {
     return members.length;
   }
 
-  async zrange<T>(key: string, start: number, stop: number): Promise<T> {
-    const sorted = [...(zsets.get(key) ?? new Map()).entries()].sort((a, b) => a[1] - b[1]).map((e) => e[0]);
-    return sorted.slice(start, stop === -1 ? undefined : stop + 1) as T;
+  async zrange<T>(key: string, start: number, stop: number, opts?: { withScores?: boolean }): Promise<T> {
+    const sorted = [...(zsets.get(key) ?? new Map()).entries()].sort((a, b) => a[1] - b[1]);
+    const picked = sorted.slice(start, stop === -1 ? undefined : stop + 1);
+    return (opts?.withScores ? picked.flat() : picked.map((e) => e[0])) as T;
+  }
+
+  async keys(pattern: string): Promise<string[]> {
+    const escape = (s: string) => s.replace(/[.+?^${}()|[\]\\]/g, (c) => `\\${c}`);
+    const re = new RegExp(`^${pattern.split("*").map(escape).join(".*")}$`);
+    return [...strings.keys(), ...sets.keys(), ...zsets.keys()].filter((k) => re.test(k));
   }
 
   async zremrangebyscore(key: string, min: number | string, max: number | string): Promise<number> {
