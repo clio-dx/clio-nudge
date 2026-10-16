@@ -23,11 +23,20 @@
         "usage_hint": "설정 | 목록 | 새로고침 | 9시 | 매시간 | 2시간마다 | 끄기 | 도움말",
         "should_escape": false
       }
+    ],
+    "shortcuts": [
+      {
+        "name": "Nudge가 놓친 질문",
+        "type": "message",
+        "callback_id": "nudge_missed",
+        "description": "이 메시지를 Nudge 목록에 추가하고, 놓친 질문으로 알려줘요"
+      }
     ]
   },
   "oauth_config": {
     "redirect_urls": [
-      "https://nudge-233887047351.asia-northeast3.run.app/api/slack/oauth/callback"
+      "https://nudge-233887047351.asia-northeast3.run.app/api/slack/oauth/callback",
+      "https://clio-nudge.vercel.app/api/slack/oauth/callback"
     ],
     "scopes": {
       "user": [
