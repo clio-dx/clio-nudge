@@ -2,7 +2,7 @@
 // logic serves the slash command, plain messages in the Nudge DM, and digest buttons.
 import { createBoundedClient, createSlackClient, getUserTimezone } from "@/lib/slack";
 import { getUser, updateUser, type NudgeUser } from "@/lib/db";
-import { pollUser } from "@/lib/poll";
+import { pollUser, type PollStats } from "@/lib/poll";
 import { buildDigestBlocks, countGroups, firstCheckBlocks, formatAge, groupCounts, loadVisible } from "@/lib/digest";
 import { hourlyTriggerActive, settleBy, teamUrlFor } from "@/lib/tick";
 import { applyScheduleUpdate, parseCommand, type Command } from "@/lib/command";
@@ -242,6 +242,32 @@ async function listReply(user: NudgeUser, p: string, footer?: string | null, par
       prefix: p,
       partial,
     }),
+  };
+}
+
+// The DM sent when the first check after connecting stops, so people don't have to keep asking.
+// Under the AI limit that check often can't read the whole 7-day backlog in one go: then it shows
+// what was found so far, and the rest comes with the next check (or 🔄).
+export async function firstReport(user: NudgeUser, stats: PollStats): Promise<Reply> {
+  const [visible, teamUrl] = await Promise.all([loadVisible(user, Date.now(), { includeFresh: true }), teamUrlFor(user)]);
+  // A whole search failing ("incoming: …") reads nothing but doesn't keep firstScanPending set
+  const done = !user.firstScanPending && !stats.errors.some((e) => /^(incoming|outgoing):/.test(e));
+  const { schedule, paused } = resolveSchedule(user);
+  const when = paused ? "" : `앞으로 확인할 질문이 생기면 *${formatSchedule(schedule)}*에 알려드려요`;
+  const title = done
+    ? "✅ *지난 7일 치 Slack을 다 확인했어요!*"
+    : "⏳ *지난 7일 치 Slack 중 일부를 먼저 확인했어요.*";
+  const footer = !done
+    ? "확인할 메시지가 많아 아직 다 보지 못했어요 · 나머지는 다음 확인 때 이어서 보고, 지금 더 보려면 🔄를 눌러 주세요"
+    : countGroups(visible) > 0
+      ? ["답장했거나 신경 쓰지 않아도 되면 *완료*를 눌러 주세요", when].filter(Boolean).join(" · ")
+      : when || undefined;
+  return {
+    text: done ? "Nudge: 지난 7일 치 확인을 마쳤어요" : "Nudge: 지난 7일 치 중 일부를 확인했어요",
+    blocks: [
+      section(title),
+      ...buildDigestBlocks(visible, teamUrl, { maxPerSection: 20, footer, isList: true, prefix: DM_PREFIX, partial: !done }),
+    ],
   };
 }
 

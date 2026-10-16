@@ -173,23 +173,27 @@ const button = (text: string, action_id: string, primary = false) => ({
   ...(primary ? { style: "primary" } : {}),
 });
 
-// The first DM after connecting, with one button to try
+// The first DM after connecting. No button: the result of the first check follows on its own
 export function welcomeBlocks(): Block[] {
   return [
     { type: "section", text: { type: "mrkdwn", text: WELCOME_TEXT } },
-    { type: "actions", elements: [button("📋 목록 보기", QUICK_ACTIONS.list, true)] },
     { type: "context", elements: [{ type: "mrkdwn", text: WELCOME_NOTE }] },
+  ];
+}
+
+// Sent instead of the first check's result when that check crashed
+export function firstCheckFailedBlocks(): Block[] {
+  return [
+    { type: "section", text: { type: "mrkdwn", text: "😵 *지난 7일 치 Slack을 확인하다가 문제가 생겼어요.* 아래 버튼으로 다시 확인해 볼까요?" } },
+    { type: "actions", elements: [button(REFRESH_LABEL, QUICK_ACTIONS.refresh, true)] },
   ];
 }
 
 // Shown instead of "모두 처리했어요" while the first check after connecting is still running
 export function firstCheckBlocks(): Block[] {
   return [
-    { type: "section", text: { type: "mrkdwn", text: "⏳ 아직 지난 7일 치 Slack을 확인하고 있어요. 잠시 뒤에 다시 볼까요?" } },
-    {
-      type: "actions",
-      elements: [button("📋 목록 다시 보기", QUICK_ACTIONS.list, true), button(REFRESH_LABEL, QUICK_ACTIONS.refresh)],
-    },
+    { type: "section", text: { type: "mrkdwn", text: "⏳ 아직 지난 7일 치 Slack을 확인하고 있어요. 아래 🔄로 지금 바로 더 확인할 수도 있어요." } },
+    { type: "actions", elements: [button(REFRESH_LABEL, QUICK_ACTIONS.refresh)] },
   ];
 }
 

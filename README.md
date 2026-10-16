@@ -9,7 +9,7 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 
 [![Add to Slack](https://platform.slack-edge.com/img/add_to_slack.png)](https://clio-nudge.vercel.app/api/slack/oauth)
 
-설치하면 안내 DM이 오고, 지난 7일 치 메시지를 바로 확인해요. 기본값은 **평일 오전 8시에 하루 한 번**(Slack 프로필 시간대 기준)이고, 확인할 질문이 있을 때만 DM을 보내요.
+설치하면 안내 DM이 오고, 지난 7일 치 메시지를 바로 확인해서 몇 분 안에 찾은 질문을 DM으로 보내요. 기본값은 **평일 오전 8시에 하루 한 번**(Slack 프로필 시간대 기준)이고, 확인할 질문이 있을 때만 DM을 보내요.
 
 ---
 

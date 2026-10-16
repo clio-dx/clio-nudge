@@ -61,12 +61,13 @@ _알림의 *완료* 버튼으로 직접 지울 수도 있어요. 지운 질문�
 물음표(?)가 있거나 \`~할까요\`, \`~인가요\`, \`~부탁드립니다\`, \`~해 주세요\`처럼 질문이나 요청이 담긴 메시지예요. 📥는 1:1 DM, 나를 @멘션한 메시지, 내가 시작한 스레드의 답글만 보고, 봇 메시지는 빼요.`;
 }
 
-// First DM after connecting: what's happening and one thing to try — the full guide is behind 도움말
+// First DM after connecting: what's happening and what comes next — the full guide is behind 도움말.
+// The first check's result follows as its own DM (app/api/slack/oauth/callback).
 export const WELCOME_TEXT = `👋 *Nudge가 연결됐어요!*
-지난 7일 치 Slack에서 놓친 질문을 찾고 있어요. 잠시 뒤 *목록*을 한번 볼까요?`;
+지난 7일 치 Slack에서 놓친 질문을 찾고 있어요. 확인이 끝나면 이 창으로 결과를 보내드릴게요 _(보통 몇 분 걸려요)_`;
 
 export const WELCOME_NOTE =
-  "이 창에 `목록`이라고 입력해도 돼요 · 확인할 질문이 있으면 평일 오전 8시에 알려드려요 · 궁금한 건 `도움말`";
+  "그 뒤로는 확인할 질문이 있을 때 평일 오전 8시에 알려드려요 · 궁금한 건 `도움말`";
 
 // Public site: the landing page, and where people connect Nudge the first time (Add to Slack)
 export const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://clio-nudge.vercel.app";
@@ -83,7 +84,7 @@ export const linkButton = (text: string, url: string, primary = false) => ({
 export const CONNECT_STEPS = `*Nudge를 쓰려면 처음 한 번 연결이 필요해요*
 1. 아래 *Nudge 연결하기*를 눌러요 (<${APP_URL}|${APP_HOST}>에서 *Add to Slack*을 눌러도 같아요)
 2. 권한 화면에서 *허용*을 눌러요
-3. 끝! Nudge DM으로 안내가 오고, 평일 오전 8시에 확인할 질문을 보내드려요`;
+3. 끝! 몇 분 안에 Nudge DM으로 지난 7일 치 놓친 질문을 보내드리고, 그 뒤로는 평일 오전 8시에 알려드려요`;
 
 export const connectActions = () => ({
   type: "actions",

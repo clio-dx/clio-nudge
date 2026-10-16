@@ -6,7 +6,7 @@ import { resetSlack, workspace, type FakeMessage } from "./mocks/slack-web-api.t
 import { resetRedis } from "./mocks/redis.ts";
 import { aiCalls, aiFailures, aiVerdicts, modelsUsed, temperatures } from "./mocks/ai.ts";
 import { classifyResponse, classifyUserMessage, resumeAi } from "../lib/ai.ts";
-import { dmResponder, parseDmText, runCommand } from "../lib/nudge-command.ts";
+import { dmResponder, firstReport, parseDmText, runCommand } from "../lib/nudge-command.ts";
 import { dismissGroup } from "../lib/dismiss.ts";
 import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
 import { JUDGE_VERSION, pollUser } from "../lib/poll.ts";
@@ -666,13 +666,13 @@ test("opening Nudge before connecting shows how to start; after connecting, the 
   assert.equal(workspace.posted.filter((p) => p.channel === "DNUDGE").length, 0, "no greeting for connected users");
 });
 
-test("the welcome DM is short and offers the list; the list says so while the first check runs", async () => {
+test("the welcome DM is short and promises the result; the list says so while the first check runs", async () => {
   const welcome = JSON.stringify(welcomeBlocks());
-  assert.match(welcome, /목록.*볼까요/);
-  assert.ok(welcome.includes(QUICK_ACTIONS.list), "one tap to see the list");
+  assert.match(welcome, /결과를 보내드릴게요/);
+  assert.ok(!welcome.includes(QUICK_ACTIONS.list), "no button that only says 'still checking' during the first check");
   assert.ok(!/매시간|9시 13시|받은질문/.test(welcome), "no full usage guide up front");
 
-  // 📋 목록 보기 right after connecting, before the first check finished
+  // 목록 typed right after connecting, before the first check finished
   const user = await install({ botDmChannel: "DNUDGE" });
   await runCommand(user, { type: "list" }, dmResponder(user.botToken, "DNUDGE"));
   const early = JSON.stringify(workspace.posted.at(-1)!.blocks);
@@ -690,6 +690,34 @@ test("the welcome DM is short and offers the list; the list says so while the fi
   const after = JSON.stringify(workspace.posted.at(-1)!.blocks);
   assert.match(after, /확인할 질문이 \d+개 있어요/);
   assert.equal(workspace.posted.at(-1)!.channel, "DNUDGE", "posted in the Nudge DM like a typed 목록");
+});
+
+test("the first check's result DM lists what it found, and says when it couldn't read everything", async () => {
+  await install({ botDmChannel: "DNUDGE", firstScanPending: true });
+  channel("DQ", "im", [ME, "UC"]);
+  msg({ channel: "DQ", user: "UC", text: "견적서 언제 받을 수 있을까요?", hoursAgo: 0.5 });
+
+  const stats = await pollUser((await getUser(ME))!);
+  const done = JSON.stringify((await firstReport((await getUser(ME))!, stats)).blocks);
+  assert.match(done, /다 확인했어요/);
+  assert.match(done, /archives\/DQ\/.*30분 전/, "includes a question still inside the digest's 2h wait");
+  assert.match(done, /평일 오전 8시/, "says when the next ones come");
+  assert.ok(!done.includes("확인하고 있어요"));
+
+  // Cut short (e.g. by the AI limit): what was found so far, without "all done"
+  await updateUser(ME, { firstScanPending: true });
+  const partial = JSON.stringify((await firstReport((await getUser(ME))!, stats)).blocks);
+  assert.match(partial, /일부를 먼저 확인했어요/);
+  assert.match(partial, /다음 확인 때 이어서/);
+  assert.ok(!partial.includes("다 확인했어요"));
+
+  // Nothing found and not done: never "모두 처리했어요"
+  for (const kind of ["incoming", "outgoing"] as const) {
+    for (const f of await getUserFollowUps(ME, kind)) await removeFollowUp(kind, ME, f.channel, f.threadTs);
+  }
+  const empty = JSON.stringify((await firstReport((await getUser(ME))!, stats)).blocks);
+  assert.ok(!empty.includes("모두 처리했어요"));
+  assert.match(empty, /아직 찾은 질문은 없어요/);
 });
 
 test("a promise to get back is labelled in the list, also on items judged before the label existed", async () => {

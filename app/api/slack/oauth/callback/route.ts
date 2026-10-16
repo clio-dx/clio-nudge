@@ -2,19 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { getUser, saveUser, type NudgeUser } from "@/lib/db";
 import { createSlackClient, getUserTimezone } from "@/lib/slack";
-import { pollUser } from "@/lib/poll";
+import { pollUser, type PollStats } from "@/lib/poll";
 import { postDM } from "@/lib/tick";
 import { currentSlot } from "@/lib/schedule";
-import { welcomeBlocks } from "@/lib/digest";
+import { firstCheckFailedBlocks, welcomeBlocks } from "@/lib/digest";
+import { firstReport } from "@/lib/nudge-command";
 import { publishHome } from "@/lib/home";
 
-// The first poll (7 days of history) runs in waitUntil
+// The first poll (7 days of history) and the DM with its result run in waitUntil
 export const maxDuration = 300;
 
 async function onboard(user: NudgeUser, isNew: boolean, appId?: string) {
   if (isNew) {
     try {
-      await postDM(user, welcomeBlocks(), "Nudge가 연결됐어요! 잠시 뒤 목록을 한번 볼까요?");
+      await postDM(user, welcomeBlocks(), "Nudge가 연결됐어요! 지난 7일 치 놓친 질문을 찾아 몇 분 안에 알려드릴게요");
     } catch (err) {
       console.error("welcome DM failed:", err);
     }
@@ -26,11 +27,25 @@ async function onboard(user: NudgeUser, isNew: boolean, appId?: string) {
   } catch (err) {
     console.error("home tab publish failed:", err);
   }
+  let stats: PollStats;
   try {
-    const stats = await pollUser(fresh, Date.now() + 240_000);
+    // Leaves time inside maxDuration for the result DM below
+    stats = await pollUser(fresh, Date.now() + 200_000);
     console.log("first poll", user.slackUserId, JSON.stringify({ ...stats, errors: stats.errors.length }));
   } catch (err) {
     console.error("first poll failed:", err);
+    // The welcome DM promised a result: say it didn't work out rather than going quiet
+    if (isNew) await postDM(fresh, firstCheckFailedBlocks(), "Nudge: 첫 확인 중 문제가 생겼어요").catch(() => {});
+    return;
+  }
+  // Reinstalls keep their usual digests; "poll already running" means 🔄 is already showing the list
+  if (!isNew || stats.skipped) return;
+  try {
+    const done = (await getUser(user.slackUserId)) ?? fresh;
+    const report = await firstReport(done, stats);
+    await postDM(done, report.blocks ?? [], report.text ?? "");
+  } catch (err) {
+    console.error("first report DM failed:", err);
   }
 }
 
