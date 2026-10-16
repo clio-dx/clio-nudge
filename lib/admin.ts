@@ -165,6 +165,6 @@ export async function recentLogs({
     at: e.timestamp,
     severity: e.severity ?? "DEFAULT",
     service: e.resource?.labels?.service_name ?? "",
-    text: e.textPayload ?? JSON.stringify(e.jsonPayload ?? ""),
+    text: e.textPayload ?? (e.jsonPayload as { message?: string } | undefined)?.message ?? JSON.stringify(e.jsonPayload ?? ""),
   }));
 }
