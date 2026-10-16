@@ -1,5 +1,6 @@
 // Feedback in Slack: the "🙋 잘못 찾은 질문 알려주기" modal under digests and lists, the
 // "Nudge가 놓친 질문" message shortcut, and the `의견 …` command (lib/nudge-command.ts).
+import { WebClient } from "@slack/web-api";
 import { createBoundedClient } from "@/lib/slack";
 import { getUser, type NudgeUser } from "@/lib/db";
 import { addFollowUp, getFollowUp, itemId, markSeen, removeFollowUp, type FollowUp, type FollowUpKind } from "@/lib/store";
@@ -25,16 +26,16 @@ interface ModalMeta {
 
 const plain = (text: string) => ({ type: "plain_text", text, emoji: true });
 
-// views.open has to land inside Slack's 3 seconds: no retries, no long waits
-const createModalClient = (token: string) => {
-  const client = createBoundedClient(token);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const opts = client as any;
-  opts.timeout = 2500;
-  opts.retryConfig = { retries: 0 };
-  opts.rejectRateLimitedCalls = true;
-  return client;
-};
+// views.open has to land inside Slack's 3 seconds: no retries, no long waits (these options are
+// read when the client is built)
+const createModalClient = (token: string) =>
+  new WebClient(token, {
+    timeout: 2500,
+    retryConfig: { retries: 0 },
+    rejectRateLimitedCalls: true,
+    attachOriginalToWebAPIRequestError: false,
+  });
+
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 // private_metadata holds at most 3000 characters: one timestamp per group (the rest is looked up
