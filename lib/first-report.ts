@@ -3,7 +3,7 @@
 // get one (installs from before this DM existed, or a callback that died).
 import { updateUser, type NudgeUser } from "@/lib/db";
 import type { PollStats } from "@/lib/poll";
-import { acquireLock, releaseLock } from "@/lib/redis";
+import { acquireLock, releaseLock } from "@/lib/store";
 import { formatSchedule, resolveSchedule } from "@/lib/schedule";
 import { buildDigestBlocks, countGroups, loadVisible } from "@/lib/digest";
 import { postDM, teamUrlFor } from "@/lib/tick";
@@ -14,7 +14,8 @@ type Block = any;
 
 // The tick catches up on installs this recent, and leaves the first minutes to the callback
 const CATCH_UP_WINDOW_MS = 24 * 60 * 60 * 1000;
-const CALLBACK_GRACE_MS = 10 * 60 * 1000;
+// Longer than onboarding's own budget (up to 12 minutes of polls, lib/slack-handlers.ts)
+const CALLBACK_GRACE_MS = 20 * 60 * 1000;
 
 export function firstReportOverdue(user: NudgeUser, now = Date.now()): boolean {
   const age = now - user.installedAt;

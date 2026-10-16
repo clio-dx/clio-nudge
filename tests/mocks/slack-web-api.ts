@@ -31,6 +31,9 @@ export const workspace = {
   published: [] as { user_id: string; view: { type?: string; blocks?: unknown[] } }[], // App Home views
   calls: [] as string[],
   failing: new Set<string>(), // channels whose reads fail with a transient error
+  postFailures: 0, // the next N chat.postMessage calls fail like a Slack outage
+  failSearch: false, // search.messages fails (rate limited)
+  opened: [] as { trigger_id: string; view: unknown }[], // views.open (modals)
 };
 
 export function resetSlack(): void {
@@ -43,6 +46,9 @@ export function resetSlack(): void {
   workspace.published.length = 0;
   workspace.calls.length = 0;
   workspace.failing.clear();
+  workspace.postFailures = 0;
+  workspace.failSearch = false;
+  workspace.opened.length = 0;
 }
 
 const n = (ts: string) => parseFloat(ts);
@@ -97,6 +103,7 @@ export class WebClient {
       sort_dir?: string;
     }) => {
       workspace.calls.push(`search ${query} p${page}`);
+      if (workspace.failSearch) throw slackError("ratelimited");
       const all = search(query).sort((a, b) => (sort_dir === "asc" ? n(a.ts) - n(b.ts) : n(b.ts) - n(a.ts)));
       const matches = all.slice((page - 1) * count, page * count).map((m) => {
         const ch = workspace.channels.get(m.channel)!;
@@ -219,6 +226,10 @@ export class WebClient {
 
   chat = {
     postMessage: async ({ channel, text, blocks }: { channel: string; text?: string; blocks?: unknown[] }) => {
+      if (workspace.postFailures > 0) {
+        workspace.postFailures--;
+        throw slackError("internal_error");
+      }
       workspace.posted.push({ channel, text, blocks });
       return { ok: true, channel: "DNUDGE", ts: `${Date.now() / 1000}` };
     },
@@ -231,6 +242,10 @@ export class WebClient {
   views = {
     publish: async ({ user_id, view }: { user_id: string; view: { type?: string; blocks?: unknown[] } }) => {
       workspace.published.push({ user_id, view });
+      return { ok: true };
+    },
+    open: async ({ trigger_id, view }: { trigger_id: string; view: unknown }) => {
+      workspace.opened.push({ trigger_id, view });
       return { ok: true };
     },
   };

@@ -20,6 +20,7 @@ export type Command =
   | { type: "timezone"; tz: string } // IANA name or "auto"
   | { type: "schedule"; update: ScheduleUpdate }
   | { type: "thanks" } // "넵", "감사합니다" typed in the Nudge DM
+  | { type: "feedback"; text: string } // "의견 목록이 너무 길어요"
   | { type: "error"; message: string };
 
 const MAX_TIMES = 12;
@@ -49,6 +50,10 @@ function normalize(raw: string): string {
 }
 
 export function parseCommand(raw: string): Command {
+  // Free text for the team, kept as typed
+  const feedback = raw.trim().match(/^(의견|피드백|건의|feedback)(?:\s*[:：]\s*|\s+|$)([\s\S]*)$/i);
+  if (feedback) return { type: "feedback", text: feedback[2].trim() };
+
   const text = normalize(raw);
 
   if (is(text, ["", "status", "settings", "setting", "설정", "상태", "내설정", "내 설정"])) return { type: "status" };

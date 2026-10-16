@@ -1,7 +1,7 @@
 import type { WebClient } from "@slack/web-api";
 import { createBoundedClient, decodeSlackEntities, getConversationLabel, getUserName, isDMOrMPIM, slackErrorCode } from "@/lib/slack";
 import {
-  acquireLock,
+  acquireOwnedLock,
   addFollowUp,
   getSeen,
   getUserFollowUps,
@@ -13,7 +13,7 @@ import {
   type ConvType,
   type FollowUp,
   type FollowUpKind,
-} from "@/lib/redis";
+} from "@/lib/store";
 import {
   AiUnavailableError,
   aiAvailable,
@@ -23,6 +23,8 @@ import {
   summarizeQuestion,
 } from "@/lib/ai";
 import { updateUser, type NudgeUser } from "@/lib/db";
+import { withAiContext } from "@/lib/ai-log";
+import { recordRun } from "@/lib/runs";
 import {
   containsLink,
   isAckReaction,
@@ -698,12 +700,13 @@ async function recheckTracked(ctx: Ctx, kind: FollowUpKind): Promise<Set<string>
         const migrating = f.judgeVersion !== JUDGE_VERSION;
         const g = migrating ? { ...f, checkedTs: undefined } : f;
         const judgedThrough = migrating ? f.checkedTs : undefined;
-        const verdict =
+        const verdict = await withAiContext({ userId: ctx.me, itemId: id }, () =>
           kind === "incoming"
-            ? await checkIncoming(ctx, g, convType, undefined, judgedThrough)
+            ? checkIncoming(ctx, g, convType, undefined, judgedThrough)
             : f.promiserId
-              ? await checkPromise(ctx, g, convType, undefined, judgedThrough)
-              : await checkOutgoing(ctx, g, convType, undefined, judgedThrough);
+              ? checkPromise(ctx, g, convType, undefined, judgedThrough)
+              : checkOutgoing(ctx, g, convType, undefined, judgedThrough)
+        );
         if (verdict.answered || verdict.gone) {
           await drop(f);
           st.resolved++;
@@ -779,8 +782,10 @@ async function processCandidates(
         postponed++;
         return;
       }
+      // AI calls below are logged as being about this message
+      const kind = c.promise || runs.some((r) => r.key === "outgoing") ? "outgoing" : "incoming";
       try {
-        await handle(c);
+        await withAiContext({ userId: ctx.me, itemId: itemId(kind, c.match.channel!.id!, c.match.ts!) }, () => handle(c));
       } catch (err) {
         const code = slackErrorCode(err);
         if (err instanceof AiUnavailableError) {
@@ -790,7 +795,6 @@ async function processCandidates(
         }
         if (code && GONE_ERRORS.has(code)) {
           // Deleted message / left channel: nothing to track, and don't hold the cursor back
-          const kind = c.promise || runs.some((r) => r.key === "outgoing") ? "outgoing" : "incoming";
           await markSeen(ctx.me, itemId(kind, c.match.channel!.id!, c.match.ts!), tsNum(c.match.ts!) * 1000).catch(() => {});
           return;
         }
@@ -1036,7 +1040,10 @@ async function fillSummaries(ctx: Ctx): Promise<void> {
         // A promise ("검토 의견 드리겠습니다") says little on its own: read it with my message before it
         const source = f.about ? `${f.about}\n${f.originalMessage}` : f.originalMessage;
         let topic: string | null = null;
-        if (aiAvailable()) topic = await summarizeQuestion(source).catch(() => null);
+        if (aiAvailable()) {
+          const id = itemId(f.kind!, f.channel, f.threadTs);
+          topic = await withAiContext({ userId: f.userId, itemId: id }, () => summarizeQuestion(source)).catch(() => null);
+        }
         await updateFollowUp(f.kind!, f.userId, f.channel, f.threadTs, topic
           ? { summary: `${prefix} - ${topic}`, summaryVersion: SUMMARY_VERSION }
           // version 0 → the AI topic is retried on a later poll
@@ -1055,7 +1062,9 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
   const started = Date.now();
   const stats = emptyStats();
   const lockKey = `nudge:lock:poll:${user.slackUserId}`;
-  if (!(await acquireLock(lockKey, 300))) {
+  // Held for as long as this poll may run
+  const lockOwner = await acquireOwnedLock(lockKey, Math.max(300, Math.ceil((deadline - Date.now()) / 1000) + 120));
+  if (!lockOwner) {
     stats.skipped = "poll already running";
     return stats;
   }
@@ -1094,23 +1103,25 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
       }
     }
     await fillSummaries(ctx);
+    // A whole search failing ("incoming: …") read nothing: not a basis for a digest, and the
+    // first scan isn't done
+    const searchFailed = stats.errors.some((e) => /^(incoming|outgoing):/.test(e));
     // The first scan after installing is done once a poll read everything it found
     const caughtUp =
-      stats.incomplete.length === 0 && stats.incoming.deferred === 0 && stats.outgoing.deferred === 0;
+      !searchFailed && stats.incomplete.length === 0 && stats.incoming.deferred === 0 && stats.outgoing.deferred === 0;
     await updateUser(user.slackUserId, {
       lastPolledAt: started,
+      ...(searchFailed ? {} : { lastGoodPollAt: started }),
       searchCursors: ctx.cursors,
       ...(user.firstScanPending && caughtUp ? { firstScanPending: false } : {}),
     });
   } finally {
-    await releaseLock(lockKey);
+    await releaseLock(lockKey, lockOwner);
     stats.ms = Date.now() - started;
     // Counts only (no message text) — e.g. searched.with shows whether DM discovery works
-    console.log(
-      "poll",
-      user.slackUserId,
-      JSON.stringify({ ...stats, errors: stats.errors.length, firstError: stats.errors[0]?.slice(0, 200) })
-    );
+    const summary = { ...stats, errors: stats.errors.length, firstError: stats.errors[0]?.slice(0, 200) };
+    console.log("poll", user.slackUserId, JSON.stringify(summary));
+    await recordRun("poll", { ...summary, ok: stats.errors.length === 0 }, user.slackUserId, stats.ms);
   }
   return stats;
 }

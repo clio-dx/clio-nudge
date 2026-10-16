@@ -1,16 +1,15 @@
 // Module resolution for tests run with plain node (type stripping):
 //  - "@/x" → <repo>/x.ts, extension-less relative imports → .ts
-//  - external services (Upstash, Slack, AI SDK) → in-memory fakes in tests/mocks
+//  - external services (Slack, Vertex AI) → in-memory fakes in tests/mocks; the store runs in
+//    memory (NUDGE_STORE=memory, lib/store/backend.ts)
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MOCKS = {
-  "@upstash/redis": "tests/mocks/redis.ts",
   "@slack/web-api": "tests/mocks/slack-web-api.ts",
-  ai: "tests/mocks/ai.ts",
-  "@ai-sdk/gateway": "tests/mocks/gateway.ts",
+  "@/lib/vertex": "tests/mocks/ai.ts",
 };
 
 function asTs(file) {

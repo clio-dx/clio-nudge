@@ -250,10 +250,13 @@ async function refresh(out: Responder, user: NudgeUser): Promise<void> {
   const p = out.prefix;
   const userId = user.slackUserId;
   const started = Date.now();
-  const stats = await settleBy(pollUser(user, started + 200_000), started + 240_000);
+  const poll = pollUser(user, started + 200_000);
+  const stats = await settleBy(poll, started + 240_000);
   if (!stats) {
     const stale = (await getUser(userId)) ?? user;
     await out.replace(await listReply(stale, p, `확인할 메시지가 많아 아직 확인하고 있어요. 몇 분 뒤 \`${p}목록\`으로 다시 봐 주세요.`, true));
+    // Finish inside this task: Cloud Run gives no CPU to work left running after it answered
+    await poll.catch(() => {});
     return;
   }
   if (stats.skipped) {

@@ -42,14 +42,20 @@ Vercel Hobby + Upstash Redis + Vercel AI Gateway(무료, 분당 5회) → GCP `c
 
 ## 이전 순서 (오늘 밤)
 
-1. `main`에 **Vercel용 내보내기 엔드포인트**만 먼저 배포: `GET /api/admin/export`(Google ID 토큰 — `nudge-runtime@`만 허용)로 Upstash 전체 + Slack 시크릿 반환, `POST`로 freeze/unfreeze(freeze 시 Vercel tick 중지, OAuth 시작은 GCP로 리다이렉트)
-2. GCP 코드는 `gcp-migration` 브랜치에서 개발(병합 전까지 Vercel 프로덕션 영향 없음)
-3. GCP 배포 → 마이그레이션 작업 실행(데이터·시크릿 복사) → 검증
-4. Slack 앱 매니페스트: Request URL·Redirect URL을 Cloud Run으로, 메시지 단축키 추가 → URL 검증
-5. Vercel freeze, GitHub 시간별 워크플로 비활성화, `main` 병합(`vercel.json`에서 Git 배포 끔 → Vercel은 freeze된 버전으로 남아 롤백용)
-6. 실사용 확인(Slack에서 목록/새로고침, 관리자 페이지)
+1. `main`에 **Vercel용 내보내기 엔드포인트**만 먼저 배포: `GET /api/admin/export`(Google ID 토큰 — `nudge-runtime@`만 허용)로 Upstash 전체 + Slack 시크릿 반환, `POST`로 freeze/unfreeze/lock(freeze 시 Vercel tick 중지, OAuth 시작은 GCP로 리다이렉트)
+2. GCP 코드는 `gcp-migration` 브랜치에서 개발(병합 전까지 Vercel 프로덕션 영향 없음), 배포 후 리허설 가져오기
+3. **Vercel 동결 → 마지막 가져오기**: `migrate {freeze: true}` 작업 하나로(동결을 먼저 하고 그다음 내보내기를 읽음). 이 뒤로 Vercel에서는 아무것도 바뀌지 않음
+4. Slack 앱 매니페스트: 이벤트·버튼·슬래시 명령 URL을 Cloud Run으로(Redirect URL은 둘 다 남김) → URL 검증
+5. `vercel-state {action: "lock"}` — 내보내기를 막아서 가져오기를 다시 돌려도 GCP에서 바뀐 것을 덮어쓰지 못하게 함
+6. `deploy/gcp/scheduler.sh`로 Cloud Scheduler 시작(5분마다), GitHub 시간별 워크플로 끄기, `main` 병합(`vercel.json`에서 Git 배포 끔 → Vercel은 동결된 버전으로 남아 롤백용)
+7. 실사용 확인(Slack에서 목록/새로고침, 관리자 페이지)
 
-롤백: Slack URL을 Vercel로 되돌리고 `POST /api/admin/export {action:"unfreeze"}`.
+## 롤백
+
+1. `gcloud scheduler jobs pause nudge-tick` 하고 `nudge-work` 큐 비우기(`gcloud tasks queues purge nudge-work`) — 두 곳에서 알림이 가지 않게
+2. 지난 2시간 안에 GCP가 보낸 알림이 있으면 Vercel이 같은 슬롯을 다시 보낼 수 있으니(따라잡기 2시간), 그 뒤에 진행
+3. Slack 매니페스트 URL을 `https://clio-nudge.vercel.app/...`로 되돌리고 `vercel-state {action: "unfreeze"}`
+4. GCP에 있는 동안 새로 연결한 사람은 Vercel에 토큰이 없으니 다시 연결해야 함
 
 ## 남는 일 (사용자)
 

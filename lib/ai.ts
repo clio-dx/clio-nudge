@@ -1,19 +1,23 @@
-import { generateText } from "ai";
-import { gateway } from "@ai-sdk/gateway";
+import { generateText } from "@/lib/vertex";
+import { logAiCall } from "@/lib/ai-log";
 
-// Default model - uses Vercel AI Gateway format: provider/model
-const MODEL = process.env.AI_MODEL || "anthropic/claude-haiku-4.5";
-// Used when the plan can't access MODEL (e.g. a paid-only model on the AI Gateway free tier)
-const FALLBACK_MODEL = process.env.AI_FALLBACK_MODEL || "google/gemini-2.5-flash-lite";
-// Bounded so a slow model call can't push a cron run past its time limit
-const AI_TIMEOUT_MS = 20_000;
-// After a rate-limit error, stop calling the model for a while instead of failing every call
-const RATE_LIMIT_PAUSE_MS = 60_000;
-// When no model is reachable at all (plan/permission errors), wait longer before trying again
+// Gemini on Vertex AI (lib/vertex.ts)
+const MODEL = process.env.AI_MODEL || "gemini-3.8-flash";
+// Used when MODEL can't be reached at all (not enabled for the project, retired, …)
+const FALLBACK_MODEL = process.env.AI_FALLBACK_MODEL || "gemini-2.5-flash";
+// gemini-3.8-flash answers in ~2 s but now and then hangs for 40 s: cut it off early
+const AI_TIMEOUT_MS = 10_000;
+// Vertex answers 429 (or hangs) when shared capacity is briefly short: retry with jitter — from
+// the third attempt on the fallback model — and only after that stop calling for a while
+const RATE_LIMIT_RETRIES = 3;
+const FALLBACK_FROM_ATTEMPT = 2;
+const retryBaseMs = () => Number(process.env.AI_RETRY_BASE_MS ?? 1000);
+const RATE_LIMIT_PAUSE_MS = 30_000;
+// When no model is reachable at all (permission errors), wait longer before trying again
 const NO_ACCESS_PAUSE_MS = 10 * 60_000;
 
 let pausedUntil = 0;
-// Set once the configured model turned out to be off-limits for this plan
+// Set once the configured model turned out to be unreachable
 let useFallback = false;
 
 export class AiUnavailableError extends Error {}
@@ -28,40 +32,47 @@ export function resumeAi(): void {
   useFallback = false;
 }
 
-// "Delay was aborted": the SDK was waiting out a 429's retry-after when AI_TIMEOUT_MS cut it short
-const isRateLimit = (err: unknown) => /rate.?limit|429|quota|delay was aborted/i.test(String(err));
+// A call that ran out of time is treated the same: the model is busy, not wrong
+const isRateLimit = (err: unknown) =>
+  /rate.?limit|429|quota|resource.?exhausted|delay was aborted|timeout|timed out/i.test(String(err));
 const isNoAccess = (err: unknown) =>
-  /do(es)? not have access|free tier|upgrade to paid|403|forbidden|not allowed|permission/i.test(String(err));
+  /do(es)? not have access|free tier|upgrade to paid|403|404|forbidden|not allowed|permission|not found/i.test(String(err));
 
-async function generate(prompt: string): Promise<string> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function generate(task: string, prompt: string): Promise<string> {
   if (!aiAvailable()) throw new AiUnavailableError("AI paused");
-  const model = useFallback ? FALLBACK_MODEL : MODEL;
-  try {
-    const { text } = await generateText({
-      model: gateway.languageModel(model),
-      timeout: AI_TIMEOUT_MS,
-      maxRetries: 1,
+  const preferred = useFallback ? FALLBACK_MODEL : MODEL;
+  for (let attempt = 0; ; attempt++) {
+    const model = attempt >= FALLBACK_FROM_ATTEMPT ? FALLBACK_MODEL : preferred;
+    const started = Date.now();
+    try {
       // Verdicts are stored for good, so the same message must always get the same one
-      temperature: 0,
-      prompt,
-    });
-    return text;
-  } catch (err) {
-    if (isNoAccess(err) && model !== FALLBACK_MODEL) {
-      console.error(`AI model ${model} is not available on this plan; using ${FALLBACK_MODEL}:`, String(err).slice(0, 200));
-      useFallback = true;
-      return generate(prompt);
+      const { text } = await generateText({ model, prompt, temperature: 0, timeoutMs: AI_TIMEOUT_MS });
+      await logAiCall({ task, model, prompt, output: text, ms: Date.now() - started, ok: true });
+      return text;
+    } catch (err) {
+      await logAiCall({ task, model, prompt, ms: Date.now() - started, ok: false, error: String(err).slice(0, 300) });
+      if (isRateLimit(err) && attempt < RATE_LIMIT_RETRIES) {
+        await sleep(retryBaseMs() * 2 ** attempt * (0.5 + Math.random()));
+        continue;
+      }
+      if (!isRateLimit(err) && isNoAccess(err) && preferred !== FALLBACK_MODEL) {
+        console.error(`AI model ${model} is not reachable; using ${FALLBACK_MODEL}:`, String(err).slice(0, 200));
+        useFallback = true;
+        return generate(task, prompt);
+      }
+      if (isRateLimit(err) || isNoAccess(err)) {
+        pausedUntil = Date.now() + (isRateLimit(err) ? RATE_LIMIT_PAUSE_MS : NO_ACCESS_PAUSE_MS);
+        throw new AiUnavailableError(String(err).slice(0, 200));
+      }
+      throw err;
     }
-    if (isRateLimit(err) || isNoAccess(err)) {
-      pausedUntil = Date.now() + (isRateLimit(err) ? RATE_LIMIT_PAUSE_MS : NO_ACCESS_PAUSE_MS);
-      throw new AiUnavailableError(String(err).slice(0, 200));
-    }
-    throw err;
   }
 }
 
 export async function summarizeQuestion(originalMessage: string): Promise<string> {
-  const text = await generate(`Extract the topic of this Slack message in 2-5 words. Output ONLY the topic, nothing else.
+  const text = await generate("summary", `Extract the topic of this Slack message in 2-5 words. Output ONLY the topic, nothing else.
 ALWAYS write the topic in Korean, even when the message is in English. Keep product names, acronyms and code names as they are (PR, API, Jira, Notion).
 
 Examples:
@@ -91,7 +102,7 @@ export async function classifyResponse(
   originalQuestion: string,
   response: string
 ): Promise<ResponseClassification> {
-  const text = await generate(`You are analyzing a Slack conversation. Someone asked a question and received a response.
+  const text = await generate("classify-response", `You are analyzing a Slack conversation. Someone asked a question and received a response.
 Determine if the response is a substantive answer OR a non-committal acknowledgment.
 Messages may be in Korean or English.
 
@@ -126,7 +137,7 @@ export async function classifyUserMessage(
   originalQuestion: string,
   newMessage: string
 ): Promise<UserMessageClassification> {
-  const text = await generate(`You are analyzing a Slack conversation. Someone asked a question earlier and is now sending another message in the same conversation.
+  const text = await generate("classify-user-message", `You are analyzing a Slack conversation. Someone asked a question earlier and is now sending another message in the same conversation.
 Messages may be in Korean or English.
 Determine if their new message is:
 - A FOLLOW-UP: they're still waiting for an answer (e.g., "bump", "any update?", "following up", "hey X, checking in on this", "혹시 확인되셨을까요?", "리마인드 드려요", "이거 어떻게 됐나요")
@@ -146,7 +157,7 @@ Reply with ONLY one word: "follow-up" or "self-resolved"`);
 // "검토 의견 드리겠습니다": does this message promise the reader something later (an answer,
 // opinion, file, update)? `previous` is the reader's message it replies to, when there is one.
 export async function classifyPromise(message: string, previous?: string): Promise<boolean> {
-  const text = await generate(`You are analyzing a Slack conversation. Messages may be in Korean or English.
+  const text = await generate("classify-promise", `You are analyzing a Slack conversation. Messages may be in Korean or English.
 Determine if the new message PROMISES the reader something they will send or tell later — an answer, opinion,
 review result, file, data or update — so the reader is now waiting on the sender.
 

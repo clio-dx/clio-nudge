@@ -1,66 +1,109 @@
-// Moving Nudge to GCP (docs/gcp-migration.md): the GCP side pulls everything from here once,
-// then freezes this deployment so both never send digests to the same people.
-import { redis, getUserFollowUps, type FollowUp } from "@/lib/redis";
-import { getAllUsers, type NudgeUser } from "@/lib/db";
+// One-off move from the Vercel deployment (Upstash) to GCP (docs/gcp-migration.md). Runs as the
+// nudge-runtime service account: the frozen Vercel side only answers that identity.
+import { idTokenFor, putSecret } from "@/lib/gcp";
+import { addFollowUp, firstTime, getUserFollowUps, kindOf, markSeen, removeFollowUp, type FollowUp } from "@/lib/store";
+import { backend, clean } from "@/lib/store/backend";
+import type { NudgeUser } from "@/lib/db";
 
-export const GCP_URL = "https://nudge-233887047351.asia-northeast3.run.app";
-// Only the GCP runtime service account may pull the data
-export const GCP_RUNTIME_SA = "nudge-runtime@clio-nudge.iam.gserviceaccount.com";
-
-const FROZEN_KEY = "nudge:migrated"; // set → ticks stop here and new connections go to GCP
-const LOCKED_KEY = "nudge:export-locked"; // set → the export can't be read again
-
-export async function isFrozen(): Promise<boolean> {
-  return (await redis.exists(FROZEN_KEY)) === 1;
-}
-
-export async function isExportLocked(): Promise<boolean> {
-  return (await redis.exists(LOCKED_KEY)) === 1;
-}
-
-export async function setMigrationState(action: "freeze" | "unfreeze" | "lock"): Promise<void> {
-  if (action === "freeze") await redis.set(FROZEN_KEY, { at: Date.now(), to: GCP_URL });
-  else if (action === "unfreeze") await redis.del(FROZEN_KEY, LOCKED_KEY);
-  else await redis.set(LOCKED_KEY, Date.now());
-}
+export const VERCEL_URL = "https://clio-nudge.vercel.app";
+const EXPORT_URL = `${VERCEL_URL}/api/admin/export`;
 
 export interface MigrationExport {
   version: 1;
   exportedAt: number;
   users: NudgeUser[];
   followups: FollowUp[];
-  seen: Record<string, Record<string, number>>; // userId → itemId → message time
-  flags: string[]; // one-time keys (e.g. nudge:onboarded:U…)
+  seen: Record<string, Record<string, number>>;
+  flags: string[];
   slack: { clientId?: string; clientSecret?: string; signingSecret?: string };
 }
 
-// Upstash returns [member, score, member, score, …] for withScores
-function pairs(flat: (string | number)[]): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (let i = 0; i + 1 < flat.length; i += 2) out[String(flat[i])] = Number(flat[i + 1]);
-  return out;
+export interface ImportResult {
+  exportedAt: number;
+  users: number;
+  followups: number;
+  removedFollowups: number;
+  seen: number;
+  flags: number;
+  secretsUpdated: string[];
+  frozen?: boolean;
 }
 
-export async function buildExport(): Promise<MigrationExport> {
-  const users = await getAllUsers();
-  const followups: FollowUp[] = [];
-  const seen: MigrationExport["seen"] = {};
-  for (const u of users) {
-    for (const kind of ["incoming", "outgoing"] as const) followups.push(...(await getUserFollowUps(u.slackUserId, kind)));
-    seen[u.slackUserId] = pairs(await redis.zrange<(string | number)[]>(`seen:${u.slackUserId}`, 0, -1, { withScores: true }));
+async function callExport(init?: { method: "POST"; body: unknown }): Promise<Response> {
+  const token = await idTokenFor(EXPORT_URL);
+  return fetch(EXPORT_URL, {
+    method: init?.method ?? "GET",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: init ? JSON.stringify(init.body) : undefined,
+    signal: AbortSignal.timeout(60_000),
+  });
+}
+
+export async function fetchExport(): Promise<MigrationExport> {
+  const res = await callExport();
+  if (!res.ok) throw new Error(`export ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return (await res.json()) as MigrationExport;
+}
+
+export async function setVercelState(action: "freeze" | "unfreeze" | "lock"): Promise<unknown> {
+  const res = await callExport({ method: "POST", body: { action } });
+  if (!res.ok) throw new Error(`${action} ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return res.json();
+}
+
+// Writes the export as GCP's data. Safe to run again before the cutover: Vercel stays the source
+// of truth until it is frozen (questions resolved there since the last run are removed here).
+export async function applyExport(data: MigrationExport): Promise<Omit<ImportResult, "secretsUpdated" | "frozen">> {
+  for (const u of data.users) await backend.set(`users/${u.slackUserId}`, clean(u));
+
+  let removed = 0;
+  const keep = new Set(data.followups.map((f) => `${kindOf(f)}:${f.userId}:${f.channel}:${f.threadTs}`));
+  for (const u of data.users) {
+    for (const kind of ["incoming", "outgoing"] as const) {
+      for (const f of await getUserFollowUps(u.slackUserId, kind)) {
+        if (!keep.has(`${kind}:${f.userId}:${f.channel}:${f.threadTs}`)) {
+          await removeFollowUp(kind, f.userId, f.channel, f.threadTs);
+          removed++;
+        }
+      }
+    }
   }
-  const flags = await redis.keys("nudge:onboarded:*");
+  for (const f of data.followups) await addFollowUp({ ...f, kind: kindOf(f) });
+
+  let seen = 0;
+  for (const [userId, ids] of Object.entries(data.seen)) {
+    for (const [id, ms] of Object.entries(ids)) {
+      await markSeen(userId, id, ms);
+      seen++;
+    }
+  }
+  for (const key of data.flags) await firstTime(key);
+
   return {
-    version: 1,
-    exportedAt: Date.now(),
-    users,
-    followups,
+    exportedAt: data.exportedAt,
+    users: data.users.length,
+    followups: data.followups.length,
+    removedFollowups: removed,
     seen,
-    flags,
-    slack: {
-      clientId: process.env.SLACK_CLIENT_ID,
-      clientSecret: process.env.SLACK_CLIENT_SECRET,
-      signingSecret: process.env.SLACK_SIGNING_SECRET,
-    },
+    flags: data.flags.length,
   };
+}
+
+// `freeze`: stop Vercel first (no more ticks or changes there), then take the final copy. After
+// the Slack URLs point here, lock the export (vercel-state "lock") so this can't run again and
+// undo what people did on GCP.
+export async function importFromVercel({ freeze = false }: { freeze?: boolean } = {}): Promise<ImportResult> {
+  if (freeze) await setVercelState("freeze");
+  const data = await fetchExport();
+  const counts = await applyExport(data);
+
+  const secretsUpdated: string[] = [];
+  const secrets: [string, string | undefined][] = [
+    ["slack-client-id", data.slack.clientId],
+    ["slack-client-secret", data.slack.clientSecret],
+    ["slack-signing-secret", data.slack.signingSecret],
+  ];
+  for (const [name, value] of secrets) if (value && (await putSecret(name, value))) secretsUpdated.push(name);
+
+  return { ...counts, secretsUpdated, ...(freeze ? { frozen: true } : {}) };
 }

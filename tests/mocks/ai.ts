@@ -1,4 +1,4 @@
-// Deterministic stand-in for the AI SDK: keyword rules instead of a model.
+// Deterministic stand-in for lib/vertex.ts (Gemini): keyword rules instead of a model.
 
 export const aiCalls: string[] = [];
 // Set to make the next N calls fail like a provider rate limit, or a model unavailable on the plan
@@ -20,21 +20,22 @@ export async function generateText({
   temperature,
 }: {
   prompt: string;
-  model?: { id?: string };
+  model: string;
   temperature?: number;
+  timeoutMs?: number;
 }): Promise<{ text: string }> {
-  modelsUsed.push(model?.id ?? "");
+  modelsUsed.push(model);
   temperatures.push(temperature);
-  if (model?.id && aiFailures.paidOnly.has(model.id)) {
-    throw new Error("GatewayInternalServerError: Free tier users do not have access to this model. Upgrade to paid credits");
+  if (aiFailures.paidOnly.has(model)) {
+    throw new Error(`POST https://aiplatform.googleapis.com/v1/... → 404: Publisher model ${model} was not found or your project does not have access to it`);
   }
   if (aiFailures.delayAborted > 0) {
     aiFailures.delayAborted--;
-    throw new DOMException("Delay was aborted", "AbortError");
+    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
   }
   if (aiFailures.rateLimited > 0) {
     aiFailures.rateLimited--;
-    throw new Error("Rate limit exceeded for model: this team's limit of 5 requests per minute was reached");
+    throw new Error("POST https://aiplatform.googleapis.com/v1/... → 429: RESOURCE_EXHAUSTED Resource exhausted. Please try again later.");
   }
   if (prompt.includes('"promise" or "other"')) {
     const message = quoted(prompt, "New message");

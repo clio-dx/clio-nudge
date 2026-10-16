@@ -1,4 +1,4 @@
-import { getUserFollowUps, itemId, type FollowUp, type FollowUpKind } from "@/lib/redis";
+import { getUserFollowUps, itemId, type FollowUp, type FollowUpKind } from "@/lib/store";
 import { decodeSlackEntities, escapeSlackText, getThreadLink } from "@/lib/slack";
 import type { NudgeUser } from "@/lib/db";
 import { REFRESH_LABEL, SECTION_NAMES, WELCOME_NOTE, WELCOME_TEXT } from "@/lib/messages";
@@ -145,6 +145,18 @@ function sectionBlocks(
     });
   }
   return blocks;
+}
+
+// The rows a digest or list shows, in order (feedback modal: which one was wrong)
+export function digestGroups(v: Visible): { kind: FollowUpKind; channel: string; threadTs: string[]; label: string }[] {
+  return (["incoming", "outgoing"] as const).flatMap((kind) =>
+    group(v[kind], kind).map((g) => ({
+      kind,
+      channel: g.first.channel,
+      threadTs: g.members.map((m) => m.threadTs),
+      label: `${kind === "incoming" ? "📥" : "📤"} ${g.first.summary || fallbackText(g.first.originalMessage)}`,
+    }))
+  );
 }
 
 // Rows per section, as shown in digests (grouped)

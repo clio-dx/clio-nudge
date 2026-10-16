@@ -3,7 +3,7 @@
 // "connect first" message — otherwise a new user lands on an empty screen.
 import { createBoundedClient } from "@/lib/slack";
 import { getAllUsers, getUser, type NudgeUser } from "@/lib/db";
-import { firstTime } from "@/lib/redis";
+import { firstTime } from "@/lib/store";
 import { homeView } from "@/lib/nudge-command";
 import { notInstalledReply } from "@/lib/messages";
 
