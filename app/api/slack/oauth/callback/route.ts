@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
-import { getUser, saveUser, type NudgeUser } from "@/lib/db";
+import { getUser, saveUser, updateUser, type NudgeUser } from "@/lib/db";
 import { createSlackClient, getUserTimezone } from "@/lib/slack";
 import { pollUser, type PollStats } from "@/lib/poll";
 import { postDM } from "@/lib/tick";
 import { currentSlot } from "@/lib/schedule";
 import { firstCheckFailedBlocks, welcomeBlocks } from "@/lib/digest";
-import { firstReport } from "@/lib/nudge-command";
+import { sendFirstReport } from "@/lib/first-report";
 import { publishHome } from "@/lib/home";
 
 // The first poll (7 days of history) and the DM with its result run in waitUntil
@@ -38,12 +38,14 @@ async function onboard(user: NudgeUser, isNew: boolean, appId?: string) {
     if (isNew) await postDM(fresh, firstCheckFailedBlocks(), "Nudge: 첫 확인 중 문제가 생겼어요").catch(() => {});
     return;
   }
-  // Reinstalls keep their usual digests; "poll already running" means 🔄 is already showing the list
-  if (!isNew || stats.skipped) return;
+  if (!isNew) return; // reinstalls keep their usual digests
+  if (stats.skipped) {
+    // "poll already running": 🔄 is already showing the list
+    await updateUser(user.slackUserId, { firstReportAt: Date.now() }).catch(() => {});
+    return;
+  }
   try {
-    const done = (await getUser(user.slackUserId)) ?? fresh;
-    const report = await firstReport(done, stats);
-    await postDM(done, report.blocks ?? [], report.text ?? "");
+    await sendFirstReport((await getUser(user.slackUserId)) ?? fresh, stats);
   } catch (err) {
     console.error("first report DM failed:", err);
   }

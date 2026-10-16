@@ -6,7 +6,8 @@ import { resetSlack, workspace, type FakeMessage } from "./mocks/slack-web-api.t
 import { resetRedis } from "./mocks/redis.ts";
 import { aiCalls, aiFailures, aiVerdicts, modelsUsed, temperatures } from "./mocks/ai.ts";
 import { classifyResponse, classifyUserMessage, resumeAi } from "../lib/ai.ts";
-import { dmResponder, firstReport, parseDmText, runCommand } from "../lib/nudge-command.ts";
+import { dmResponder, parseDmText, runCommand } from "../lib/nudge-command.ts";
+import { firstReport } from "../lib/first-report.ts";
 import { dismissGroup } from "../lib/dismiss.ts";
 import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
 import { JUDGE_VERSION, pollUser } from "../lib/poll.ts";
@@ -718,6 +719,27 @@ test("the first check's result DM lists what it found, and says when it couldn't
   const empty = JSON.stringify((await firstReport((await getUser(ME))!, stats)).blocks);
   assert.ok(!empty.includes("모두 처리했어요"));
   assert.match(empty, /아직 찾은 질문은 없어요/);
+});
+
+test("the tick sends the first check's result to new users who never got it, once", async () => {
+  // Connected before the result DM existed: welcome only, still waiting
+  await install({ installedAt: Date.now() - HOUR * 1000, firstScanPending: true, lastSlot: currentSlot(Date.now()) });
+  const first = await runTick("catch-up");
+  assert.equal(first.firstReports, 1);
+  assert.equal(workspace.posted.length, 1);
+  assert.match(JSON.stringify(workspace.posted[0].blocks), /지난 7일 치 Slack/);
+  assert.ok((await getUser(ME))!.firstReportAt);
+
+  await runTick("catch-up-again");
+  assert.equal(workspace.posted.length, 1, "only once");
+});
+
+test("the tick leaves the first result to the callback right after connecting, and skips old installs", async () => {
+  await install({ installedAt: Date.now() - 2 * 60 * 1000, lastSlot: currentSlot(Date.now()) });
+  assert.equal((await runTick("just-connected")).firstReports, 0);
+  await updateUser(ME, { installedAt: Date.now() - 3 * 24 * HOUR * 1000 });
+  assert.equal((await runTick("long-ago")).firstReports, 0);
+  assert.equal(workspace.posted.length, 0);
 });
 
 test("a promise to get back is labelled in the list, also on items judged before the label existed", async () => {

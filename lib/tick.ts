@@ -5,6 +5,7 @@ import { acquireLock, recentTickHours, recordTick, redis } from "@/lib/redis";
 import { currentSlot, findDueSlot, resolveSchedule, resolveTimezone } from "@/lib/schedule";
 import { buildDigestBlocks, digestFallbackText, loadVisible, visibleIds } from "@/lib/digest";
 import { createBoundedClient, getTeamUrl } from "@/lib/slack";
+import { firstReportOverdue, sendFirstReport } from "@/lib/first-report";
 
 const USER_CONCURRENCY = 2;
 const MAX_POLL_MS_PER_USER = 90_000;
@@ -169,10 +170,22 @@ export async function runTick(source: string, nowMs = Date.now(), deadline = now
   // Not marked as handled — the next tick (within the catch-up window) picks them up
   leftDue.forEach((u) => results.push({ userId: u.slackUserId, skipped: "out of time" }));
 
-  // 2) Spare time: refresh users whose data is getting old, so their next digest and
+  // 2) New users the OAuth callback didn't send the first check's result to: one more poll,
+  //    then that DM
+  const firstReports: string[] = [];
+  await each(users.filter((u) => firstReportOverdue(u)), deadline - 40_000, async (user) => {
+    try {
+      await pollWithin(user, Math.min(deadline - 20_000, Date.now() + BACKGROUND_POLL_MS));
+      if (await sendFirstReport((await getUser(user.slackUserId)) ?? user)) firstReports.push(user.slackUserId);
+    } catch (err) {
+      console.error(`first report failed for ${user.slackUserId}:`, err);
+    }
+  });
+
+  // 3) Spare time: refresh users whose data is getting old, so their next digest and
   //    /nudge list are current even though only due users are polled before sending
   const stale = users.filter(
-    (u) => !due.includes(u) && !resolveSchedule(u).paused && Date.now() - (u.lastPolledAt ?? 0) > STALE_AFTER_MS
+    (u) => !due.includes(u) && !firstReports.includes(u.slackUserId) && !resolveSchedule(u).paused && Date.now() - (u.lastPolledAt ?? 0) > STALE_AFTER_MS
   );
   const backgroundPolled: string[] = [];
   await each(stale, deadline - 40_000, async (user) => {
@@ -189,6 +202,7 @@ export async function runTick(source: string, nowMs = Date.now(), deadline = now
     usersDue: due.length,
     usersNotified: results.filter((r) => (r.sent ?? 0) > 0).length,
     backgroundPolled: backgroundPolled.length,
+    firstReports: firstReports.length,
     results,
   };
   console.log("tick", JSON.stringify(summary));

@@ -23,6 +23,7 @@ export interface NudgeUser {
   lastDigestIds?: string[];      // items in the last digest (to detect new ones)
   lastPolledAt?: number;
   firstScanPending?: boolean;    // set on install; cleared once a poll got through the 7-day backlog
+  firstReportAt?: number;        // when the DM with the first check's result went out
   // Where each search left off: oldest-first results, so earlier pages never shift
   searchCursors?: Partial<Record<"outgoing" | "mentions" | "with", { after: string; page: number }>>;
 

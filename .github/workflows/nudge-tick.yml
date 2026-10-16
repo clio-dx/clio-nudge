@@ -32,4 +32,4 @@ jobs:
           TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=clio-nudge-tick" | jq -r .value)
           curl -fsS --max-time 310 -H "Authorization: Bearer $TOKEN" "$APP_URL/api/cron/tick" \
-            | jq -c '{ok, source, slot, usersTotal, usersDue, usersNotified}'
+            | jq -c '{ok, source, slot, usersTotal, usersDue, usersNotified, firstReports}'
