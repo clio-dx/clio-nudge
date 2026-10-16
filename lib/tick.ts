@@ -210,6 +210,7 @@ export async function runTick(source: string, nowMs = Date.now()) {
 
   for (const user of users) {
     const userId = user.slackUserId;
+    if (user.revokedAt) continue; // Slack rejected their token; connecting again clears this
     const { schedule, paused, due } = dueSlotFor(user, nowMs);
     const age = nowMs - (user.lastPolledAt ?? 0);
 

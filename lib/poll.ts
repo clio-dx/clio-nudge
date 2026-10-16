@@ -1108,6 +1108,8 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
     // A whole search failing ("incoming: …") read nothing: not a basis for a digest, and the
     // first scan isn't done
     const searchFailed = stats.errors.some((e) => /^(incoming|outgoing):/.test(e));
+    // The token is dead (uninstalled, left the workspace, deactivated): stop until they reconnect
+    const revoked = stats.errors.some((e) => /invalid_auth|token_revoked|account_inactive|not_authed|token_expired/.test(e));
     // The first scan after installing is done once a poll read everything it found
     const caughtUp =
       !searchFailed && stats.incomplete.length === 0 && stats.incoming.deferred === 0 && stats.outgoing.deferred === 0;
@@ -1116,6 +1118,7 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
       ...(searchFailed ? {} : { lastGoodPollAt: started }),
       searchCursors: ctx.cursors,
       ...(user.firstScanPending && caughtUp ? { firstScanPending: false } : {}),
+      ...(revoked ? { revokedAt: Date.now() } : {}),
     });
   } finally {
     await releaseLock(lockKey, lockOwner);

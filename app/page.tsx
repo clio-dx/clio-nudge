@@ -237,8 +237,9 @@ export default async function Home({
             <div>
               <p className="font-medium text-black dark:text-zinc-50">내 메시지를 어디에 저장하나요?</p>
               <p>
-                아직 답이 없는 질문의 본문과 짧은 요약만 Nudge 서버에 저장하고, 답이 오거나 완료하면 지워요.
-                답변 판단과 요약에는 AI를 써요.
+                아직 답이 없는 질문의 본문과 짧은 요약을 회사 Google Cloud(서울)에 저장하고, 답이 오거나 완료하면
+                목록에서 지워요. 답변 판단과 요약에는 Google Gemini를 쓰고, 판단을 더 정확하게 다듬기 위해 AI가 읽은
+                문장과 판단 결과, 보내주신 피드백은 따로 보관해요.
               </p>
             </div>
           </div>

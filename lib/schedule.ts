@@ -9,7 +9,7 @@ export const DEFAULT_DAILY_HOUR = 8;
 export const DEFAULT_SCHEDULE: Schedule = { kind: "times", hours: [DEFAULT_DAILY_HOUR], weekdaysOnly: true };
 export const DEFAULT_WINDOW = { start: 9, end: 18 };
 
-// vercel.json runs the tick once a day at this UTC hour (Vercel Hobby limit).
+// The old Vercel deployment ran its tick once a day at this UTC hour (kept for worksWithDailyCronOnly).
 // 23 UTC = 8am KST.
 export const DAILY_CRON_UTC_HOUR = 23;
 

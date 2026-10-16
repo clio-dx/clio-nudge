@@ -11,7 +11,7 @@ Vercel Hobby + Upstash Redis + Vercel AI Gateway(무료, 분당 5회) → GCP `c
 | AI | Vertex AI `gemini-3.8-flash` (global), `thinkingLevel: LOW`, 실패 시 `gemini-2.5-flash` | 분당 5회 제한이 없어짐. 기본 thinking은 호출당 25~60초라 LOW 필수(약 1.5초) |
 | 백그라운드 작업 | **Cloud Tasks** (`nudge-slack`, `nudge-work` 큐) → `/api/tasks/run` | Vercel `waitUntil` 대체. 요청 기반 과금 + 최소 1 인스턴스로 싸고 콜드스타트 없이 Slack 3초 응답. 긴 작업(첫 수집, 새로고침, 알림)은 태스크라 인스턴스가 꺼져도 다시 시도 가능 |
 | 예약 실행 | **Cloud Scheduler** 5분마다 `/api/cron/tick` (OIDC) | GitHub 시간별 실행(하루 3~5회만 돎)과 Vercel 하루 1회 크론 대체 |
-| 8시 알림 몰림 | tick은 "할 일"만 태스크로 넣고(사용자·슬롯별 이름으로 중복 방지), 알림 1시간 전에 미리 수집, 알림 때는 저장된 데이터로 바로 보냄 | 사용자가 늘어도 240초 안에 다 못 돌던 문제 해결 (`nudge-scale-before-gcp` 메모) |
+| 8시 알림 몰림 | tick은 "할 일"만 태스크로 넣고(사용자·슬롯별 이름으로 중복 방지), 알림 20분 전에 미리 수집, 알림 때는 저장된 데이터로 바로 보냄 | 사용자가 늘어도 240초 안에 다 못 돌던 문제 해결 (`nudge-scale-before-gcp` 메모) |
 | 시크릿 | Secret Manager (`slack-client-id`, `slack-client-secret`, `slack-signing-secret`), 앱이 런타임에 읽음 | 마이그레이션 작업이 Vercel에서 직접 받아 넣음 → 사람이 시크릿을 복사하지 않음 |
 | 로그 | stdout JSON(severity 포함) → Cloud Logging, 관리자 페이지에서 조회 | |
 

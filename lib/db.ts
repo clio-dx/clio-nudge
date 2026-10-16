@@ -25,6 +25,7 @@ export interface NudgeUser {
   lastGoodPollAt?: number;       // last poll whose searches all went through (digests trust this one)
   firstScanPending?: boolean;    // set on install; cleared once a poll got through the 7-day backlog
   firstReportAt?: number;        // when the DM with the first check's result went out
+  revokedAt?: number;            // Slack rejected the token (uninstalled, left, deactivated): not polled until they reconnect
   // Where each search left off: oldest-first results, so earlier pages never shift
   searchCursors?: Partial<Record<"outgoing" | "mentions" | "with", { after: string; page: number }>>;
 

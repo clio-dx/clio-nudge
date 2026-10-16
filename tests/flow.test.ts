@@ -1,4 +1,4 @@
-// End-to-end poll → digest flow against a fake Slack workspace, in-memory Redis and
+// End-to-end poll → digest flow against a fake Slack workspace, in-memory store and
 // keyword-based AI (see tests/mocks). Run with: npm test
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -912,4 +912,14 @@ test("a poll whose searches failed doesn't count as fresh data for the next dige
   const after = (await getUser(ME))!;
   assert.ok(after.lastPolledAt! >= good!);
   assert.equal(after.lastGoodPollAt, good, "only a poll that read everything counts");
+});
+
+test("someone whose token Slack revoked stops being polled until they connect again", async () => {
+  const user = await install({ lastPolledAt: 0 });
+  workspace.failSearch = "revoked"; // uninstalled Nudge or left the workspace
+  await pollUser(user);
+  workspace.failSearch = false;
+  assert.ok((await getUser(ME))!.revokedAt);
+  const tick = await runTick("revoked");
+  assert.deepEqual(tick.queued, { deliver: 0, prepoll: 0, stale: 0, firstReport: 0 }, "no polls for a dead token");
 });

@@ -125,7 +125,14 @@ export async function tuningJsonl(): Promise<string> {
       if (f.label === "not_question") add(DETECT_PROMPT(f.originalMessage), "no");
       if (f.label === "missed") add(DETECT_PROMPT(f.originalMessage), "yes");
     }
-    if (f.label !== "already_answered" || !f.itemId) continue;
+    if (!f.itemId) continue;
+    // "Nudge가 놓친 질문" after the AI had called a reply the answer: that reply wasn't it
+    if (f.label === "missed") {
+      const said = calls.filter((c) => c.itemId === f.itemId && c.ok && c.task === "classify-response");
+      if (said.length === 1 && said[0].output!.trim().toLowerCase().startsWith("answer")) add(said[0].prompt, "non-committal");
+      continue;
+    }
+    if (f.label !== "already_answered") continue;
     // "이미 답했어요": the reply the AI called non-committal was the answer — only when there was
     // exactly one such call and that reply isn't itself a promise to answer later
     const judged = calls.filter((c) => c.itemId === f.itemId && c.ok && c.task === "classify-response");

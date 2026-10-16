@@ -36,6 +36,7 @@ export interface UserRow {
   paused: boolean;
   tz: string;
   firstScanPending: boolean;
+  revoked: boolean;
   incoming: number;
   outgoing: number;
   lastSentDate?: string;
@@ -60,6 +61,7 @@ export async function userRows(): Promise<UserRow[]> {
         paused,
         tz: resolveTimezone(u),
         firstScanPending: !!u.firstScanPending,
+        revoked: !!u.revokedAt,
         incoming: incoming.length,
         outgoing: outgoing.length,
         lastSentDate: u.lastSentDate,

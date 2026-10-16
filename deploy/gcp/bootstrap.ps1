@@ -26,8 +26,8 @@ Write-Host "== deployer: owner of this project only"
 gcloud projects add-iam-policy-binding $P --member "serviceAccount:$DEPLOYER" --role roles/owner --condition None --format none
 
 Write-Host "== runtime roles"
-# secretVersionAdder: the one-off migration copies the Slack app secrets from Vercel into Secret Manager
-foreach ($role in "roles/datastore.user", "roles/aiplatform.user", "roles/secretmanager.secretAccessor", "roles/secretmanager.secretVersionAdder",
+# (The one-off Vercel import also had roles/secretmanager.secretVersionAdder; removed after the cutover.)
+foreach ($role in "roles/datastore.user", "roles/aiplatform.user", "roles/secretmanager.secretAccessor",
                   "roles/cloudtasks.enqueuer", "roles/logging.viewer", "roles/logging.logWriter", "roles/monitoring.metricWriter") {
   gcloud projects add-iam-policy-binding $P --member "serviceAccount:$RUNTIME" --role $role --condition None --format none
 }

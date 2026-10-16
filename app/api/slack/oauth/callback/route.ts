@@ -58,6 +58,7 @@ export async function GET(req: NextRequest) {
       userToken,
       installedAt: existing?.installedAt ?? Date.now(),
       ...(existing ? {} : { firstScanPending: true }),
+      revokedAt: undefined, // connected again
       ...(tz ? { tz } : {}),
       // A new user's first digest is the next scheduled slot, not a catch-up of one that just
       // passed; same when a reinstall sets the timezone for the first time

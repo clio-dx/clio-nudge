@@ -16,7 +16,6 @@ import {
   nextSlotTime,
   resolveSchedule,
   resolveTimezone,
-  worksWithDailyCronOnly,
 } from "@/lib/schedule";
 import {
   APP_URL,
@@ -126,7 +125,8 @@ async function scheduleSummary(user: NudgeUser, p: string): Promise<ScheduleSumm
 
   const next = nextSlotTime(schedule, tz, Date.now());
   const nextText = next ? formatSlotTime(next, tz) : "";
-  const hourlyMissing = !worksWithDailyCronOnly(schedule, tz, Date.now()) && !(await hourlyTriggerActive());
+  // Every schedule depends on the scheduler's 5-minute tick
+  const hourlyMissing = !(await hourlyTriggerActive());
   return {
     line: `*${formatSchedule(schedule)}* (${formatTimezone(tz)})${nextText ? ` · 다음 알림 ${nextText}` : ""}`,
     when: `${formatSchedule(schedule)} (${formatTimezone(tz)})`,

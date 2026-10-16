@@ -32,7 +32,7 @@ export const workspace = {
   calls: [] as string[],
   failing: new Set<string>(), // channels whose reads fail with a transient error
   postFailures: 0, // the next N chat.postMessage calls fail like a Slack outage
-  failSearch: false, // search.messages fails (rate limited)
+  failSearch: false as boolean | "revoked", // search.messages fails (rate limited, or the token was revoked)
   opened: [] as { trigger_id: string; view: unknown }[], // views.open (modals)
 };
 
@@ -103,7 +103,7 @@ export class WebClient {
       sort_dir?: string;
     }) => {
       workspace.calls.push(`search ${query} p${page}`);
-      if (workspace.failSearch) throw slackError("ratelimited");
+      if (workspace.failSearch) throw slackError(workspace.failSearch === "revoked" ? "token_revoked" : "ratelimited");
       const all = search(query).sort((a, b) => (sort_dir === "asc" ? n(a.ts) - n(b.ts) : n(b.ts) - n(a.ts)));
       const matches = all.slice((page - 1) * count, page * count).map((m) => {
         const ch = workspace.channels.get(m.channel)!;

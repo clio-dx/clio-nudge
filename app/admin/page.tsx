@@ -51,7 +51,7 @@ export default async function AdminPage() {
             u.schedule,
             u.incoming,
             u.outgoing,
-            [u.paused ? "끔" : "", u.firstScanPending ? "첫 수집 중" : ""].filter(Boolean).join(" · ") || "정상",
+            [u.revoked ? "연결 끊김" : "", u.paused ? "끔" : "", u.firstScanPending ? "첫 수집 중" : ""].filter(Boolean).join(" · ") || "정상",
             u.lastSentDate ?? "—",
           ])}
         />
