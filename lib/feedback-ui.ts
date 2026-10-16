@@ -3,12 +3,12 @@
 import { createBoundedClient, createSlackClient } from "@/lib/slack";
 import { getUser, type NudgeUser } from "@/lib/db";
 import { addFollowUp, getFollowUp, itemId, markSeen, removeFollowUp, type FollowUp, type FollowUpKind } from "@/lib/store";
-import { buildDigestBlocks, digestFallbackText, digestGroups, loadVisible } from "@/lib/digest";
+import { buildDigestBlocks, digestFallbackText, digestGroups, FEEDBACK_ACTION, loadVisible } from "@/lib/digest";
 import { teamUrlFor } from "@/lib/tick";
 import { FEEDBACK_LABELS, feedbackFromItem, recordFeedback, type FeedbackLabel } from "@/lib/feedback";
-import { notInstalledReply } from "@/lib/messages";
+import { DM_PREFIX, notInstalledReply, SLASH_PREFIX } from "@/lib/messages";
 
-export const FEEDBACK_ACTION = "nudge_feedback";
+export { FEEDBACK_ACTION };
 export const FEEDBACK_VIEW = "nudge_feedback_modal";
 export const MISSED_SHORTCUT = "nudge_missed";
 
@@ -123,11 +123,13 @@ export interface FeedbackButtonPayload {
   actions?: { value?: string }[];
 }
 
-export async function openFeedbackModal(payload: FeedbackButtonPayload, prefix: string): Promise<void> {
+export async function openFeedbackModal(payload: FeedbackButtonPayload): Promise<void> {
   const userId = payload.user?.id;
   if (!userId || !payload.trigger_id) return;
   const user = await getUser(userId);
   if (!user) return;
+  // Commands in the redrawn message are written the way they're typed where the button was
+  const prefix = payload.channel?.id && payload.channel.id === user.botDmChannel ? DM_PREFIX : SLASH_PREFIX;
   const visible = await loadVisible(user, Date.now(), { includeFresh: true });
   const groups = digestGroups(visible);
   const meta: ModalMeta = {

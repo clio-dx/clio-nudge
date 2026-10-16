@@ -4,6 +4,7 @@ import type { NudgeUser } from "@/lib/db";
 import { buildDigestBlocks, digestFallbackText, loadVisible } from "@/lib/digest";
 import { teamUrlFor } from "@/lib/tick";
 import type { Reply } from "@/lib/nudge-command";
+import { feedbackFromItem, recordFeedback } from "@/lib/feedback";
 
 // The 완료 button's value
 export interface DismissValue {
@@ -40,6 +41,7 @@ export async function dismissGroup(
       if (!existing[i]) return;
       await removeFollowUp(kind, userId, channel, ts);
       await markSeen(userId, itemId(kind, channel, ts), existing[i]!.createdAt);
+      await recordFeedback(feedbackFromItem(userId, existing[i]!, "done", "dismiss"));
     })
   );
 

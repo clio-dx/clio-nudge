@@ -5,6 +5,7 @@ import { getUser, updateUser, type NudgeUser } from "@/lib/db";
 import { pollUser } from "@/lib/poll";
 import { buildDigestBlocks, countGroups, firstCheckBlocks, formatAge, groupCounts, loadVisible } from "@/lib/digest";
 import { hourlyTriggerActive, settleBy, teamUrlFor } from "@/lib/tick";
+import { recordFeedback } from "@/lib/feedback";
 import { applyScheduleUpdate, parseCommand, type Command } from "@/lib/command";
 import {
   currentSlot,
@@ -309,6 +310,15 @@ export async function runCommand(stored: NudgeUser, cmd: Command, out: Responder
       }
       return;
     }
+
+    case "feedback":
+      if (!cmd.text) {
+        await out.send({ text: `💌 \`${p}의견 내용\`처럼 적어 주세요. 예: \`${p}의견 목록이 너무 길어요\`` });
+        return;
+      }
+      await recordFeedback({ userId, label: "comment", source: "dm", note: cmd.text.slice(0, 2000) });
+      await out.send({ text: "💌 의견 고마워요! 더 나은 Nudge를 만드는 데 쓸게요." });
+      return;
 
     case "thanks":
       await out.send({ text: `😊 천만에요! 필요할 때 \`${p}설정\`, \`${p}목록\`, \`${p}도움말\`을 입력해 보세요.` });

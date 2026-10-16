@@ -209,13 +209,26 @@ export function firstCheckBlocks(): Block[] {
   ];
 }
 
-function quickActionsBlock(): Block {
+// Opens the "잘못 찾은 질문 알려주기" modal (lib/feedback-ui.ts); value says whether the message is a list
+export const FEEDBACK_ACTION = "nudge_feedback";
+
+function quickActionsBlock(feedback?: { isList: boolean }): Block {
   return {
     type: "actions",
     elements: [
       button("⚙️ 내 설정", QUICK_ACTIONS.settings),
       button(REFRESH_LABEL, QUICK_ACTIONS.refresh),
       button("📖 사용법", QUICK_ACTIONS.help),
+      ...(feedback
+        ? [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "🙋 잘못 찾은 질문 알려주기", emoji: true },
+              action_id: FEEDBACK_ACTION,
+              value: feedback.isList ? "list" : "digest",
+            },
+          ]
+        : []),
     ],
   };
 }
@@ -259,7 +272,7 @@ export function buildDigestBlocks(
       },
     ],
   });
-  blocks.push(quickActionsBlock());
+  blocks.push(quickActionsBlock({ isList }));
   return blocks;
 }
 

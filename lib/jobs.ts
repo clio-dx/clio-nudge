@@ -6,6 +6,7 @@ import { pollUser } from "@/lib/poll";
 import { sendFirstReport } from "@/lib/first-report";
 import { importFromVercel, setVercelState } from "@/lib/migration";
 import { recordRun } from "@/lib/runs";
+import { handleFeedbackSubmission, handleMissedQuestion, type FeedbackSubmission, type MissedQuestion } from "@/lib/feedback-ui";
 
 export type Job =
   | { type: "slack-event"; payload: EventPayload }
@@ -15,6 +16,8 @@ export type Job =
   | { type: "deliver"; userId: string }
   | { type: "poll"; userId: string }
   | { type: "first-report"; userId: string }
+  | { type: "feedback-submit"; submission: FeedbackSubmission }
+  | { type: "missed-question"; missed: MissedQuestion }
   | { type: "migrate"; freeze?: boolean }
   | { type: "vercel-state"; action: "freeze" | "unfreeze" | "lock" };
 
@@ -70,6 +73,12 @@ async function dispatch(job: Job): Promise<unknown> {
       break;
     case "first-report":
       result = { sent: await firstReportJob(job.userId) };
+      break;
+    case "feedback-submit":
+      result = await handleFeedbackSubmission(job.submission);
+      break;
+    case "missed-question":
+      result = await handleMissedQuestion(job.missed);
       break;
     case "migrate":
       result = await importFromVercel({ freeze: job.freeze });
