@@ -138,18 +138,30 @@ export async function firstTime(key: string): Promise<boolean> {
   return backend.create(`flags/${safe(key)}`, { at: new Date() });
 }
 
-export async function acquireLock(key: string, ttlSeconds: number): Promise<boolean> {
+// The lock's owner id, or null when someone else holds it
+export async function acquireOwnedLock(key: string, ttlSeconds: number): Promise<string | null> {
   const path = `locks/${safe(key)}`;
+  const owner = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return backend.transaction(async (tx) => {
     const held = await tx.get<{ expiresAt?: unknown }>(path);
-    if (held && expiresAtMs(held.expiresAt) > Date.now()) return false;
-    tx.set(path, { at: new Date(), expiresAt: new Date(Date.now() + ttlSeconds * 1000) });
-    return true;
+    if (held && expiresAtMs(held.expiresAt) > Date.now()) return null;
+    tx.set(path, { owner, at: new Date(), expiresAt: new Date(Date.now() + ttlSeconds * 1000) });
+    return owner;
   });
 }
 
-export async function releaseLock(key: string): Promise<void> {
-  await backend.delete(`locks/${safe(key)}`);
+export async function acquireLock(key: string, ttlSeconds: number): Promise<boolean> {
+  return (await acquireOwnedLock(key, ttlSeconds)) !== null;
+}
+
+// With `owner`, only that holder's lock is released — a late finisher can't free a newer lock
+export async function releaseLock(key: string, owner?: string): Promise<void> {
+  const path = `locks/${safe(key)}`;
+  if (!owner) return backend.delete(path);
+  await backend.transaction(async (tx) => {
+    const held = await tx.get<{ owner?: string }>(path);
+    if (held?.owner === owner) tx.delete(path);
+  });
 }
 
 export async function setMarker(key: string, ttlSeconds: number): Promise<void> {

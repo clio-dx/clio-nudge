@@ -1,6 +1,6 @@
 import { getAllUsers, getUser, updateUser, type NudgeUser } from "@/lib/db";
 import { pollUser, type PollStats } from "@/lib/poll";
-import { acquireLock, hasMarker, recentTickHours, recordTick, setMarker } from "@/lib/store";
+import { acquireOwnedLock, hasMarker, lastTick, recordTick, releaseLock, setMarker } from "@/lib/store";
 import { currentSlot, findDueSlot, nextSlotTime, resolveSchedule, resolveTimezone } from "@/lib/schedule";
 import { buildDigestBlocks, digestFallbackText, loadVisible, visibleIds } from "@/lib/digest";
 import { createBoundedClient, getTeamUrl } from "@/lib/slack";
@@ -16,12 +16,15 @@ const STALE_AFTER_MS = 2 * 60 * 60 * 1000; // users not due get re-polled when d
 const FRESH_ENOUGH_MS = 30 * 60 * 1000;
 const PREPOLL_WITHIN_MS = 20 * 60 * 1000;
 const PREPOLL_IF_OLDER_MS = 15 * 60 * 1000;
-// The scheduler counts as healthy when ticks landed in most of the recent hours
-const HOURLY_PROBE_HOURS = 6;
-const HOURLY_MIN_TICKS = 3;
+// Cloud Scheduler ticks every 5 minutes: healthy when one landed recently
+const TICK_HEALTHY_WITHIN_MS = 20 * 60 * 1000;
+// A deliver that failed can be queued again by a tick in the next 10-minute window (the task
+// name stays taken for about an hour after it ran)
+const DELIVER_RETRY_WINDOW_MS = 10 * 60 * 1000;
 
 export async function hourlyTriggerActive(nowMs = Date.now()): Promise<boolean> {
-  return (await recentTickHours(currentSlot(nowMs), HOURLY_PROBE_HOURS)) >= HOURLY_MIN_TICKS;
+  const last = await lastTick();
+  return !!last && nowMs - last.at < TICK_HEALTHY_WITHIN_MS;
 }
 
 export async function teamUrlFor(user: NudgeUser): Promise<string> {
@@ -67,18 +70,22 @@ interface UserResult {
   error?: string;
 }
 
-// Poll, but give up waiting at `untilMs`. The poll keeps running and saves its progress; the
-// digest doesn't wait for it.
-async function pollWithin(user: NudgeUser, untilMs: number): Promise<Pick<UserResult, "poll" | "pollTimedOut">> {
+// Poll, but stop waiting at `untilMs` so the digest goes out on time. `pending` is the poll
+// itself: the job awaits it before returning, because Cloud Run gives no CPU to work left
+// running after a request answered.
+async function pollWithin(
+  user: NudgeUser,
+  untilMs: number
+): Promise<Pick<UserResult, "poll" | "pollTimedOut"> & { pending: Promise<unknown> }> {
   const poll = pollUser(user, untilMs - 10_000).catch((err) => {
-    console.error(`poll failed for ${user.slackUserId}:`, err);
+    console.error(`poll failed for ${user.slackUserId}:`, String(err).slice(0, 300));
     return undefined;
   });
   const stats = await settleBy(poll, untilMs);
-  if (!stats) return { pollTimedOut: true };
+  if (!stats) return { pollTimedOut: true, pending: poll };
   const { errors, ...rest } = stats;
   if (errors.length > 0) console.error(`poll errors for ${user.slackUserId}:`, errors.slice(0, 10));
-  return { poll: { ...rest, errorCount: errors.length } };
+  return { poll: { ...rest, errorCount: errors.length }, pending: poll };
 }
 
 function dueSlotFor(user: NudgeUser, nowMs: number) {
@@ -90,24 +97,40 @@ function dueSlotFor(user: NudgeUser, nowMs: number) {
   };
 }
 
-export async function deliver(user: NudgeUser, nowMs: number, deadline: number): Promise<UserResult> {
+type Due = NonNullable<ReturnType<typeof findDueSlot>>;
+type Delivered = UserResult & { pending?: Promise<unknown> };
+
+// `pending`: a poll that outlasted the digest — the caller awaits it
+export async function deliver(user: NudgeUser, nowMs: number, deadline: number): Promise<Delivered> {
   const { schedule, due } = dueSlotFor(user, nowMs);
   if (!due) return { userId: user.slackUserId, skipped: "not due" };
 
   // Two ticks (or a retried task) for the same slot — first one wins.
   // Short TTL so a crashed run doesn't block the retry.
-  if (!(await acquireLock(`nudge:lock:digest:${user.slackUserId}:${due.slot}`, 600))) {
+  const lockKey = `nudge:lock:digest:${user.slackUserId}:${due.slot}`;
+  const lockOwner = await acquireOwnedLock(lockKey, 600);
+  if (!lockOwner) {
     return { userId: user.slackUserId, slot: due.slot, skipped: "handled by another tick" };
   }
+  try {
+    return await sendDue(user, schedule, due, deadline);
+  } catch (err) {
+    // Not sent: free the slot so the next tick's task can try again
+    await releaseLock(lockKey, lockOwner).catch(() => {});
+    throw err;
+  }
+}
 
-  // Polled shortly before (the pre-poll): send from that. Otherwise fresh data first — but the
-  // digest goes out on time even if the poll is stuck (rate limits, slow AI).
-  const recentlyPolled = Date.now() - (user.lastPolledAt ?? 0) < FRESH_ENOUGH_MS;
+async function sendDue(user: NudgeUser, schedule: ReturnType<typeof resolveSchedule>["schedule"], due: Due, deadline: number): Promise<Delivered> {
+  // A good poll shortly before (the pre-poll): send from that. Otherwise fresh data first — but
+  // the digest goes out on time even if the poll is stuck (rate limits, slow AI).
+  const recentlyPolled = Date.now() - (user.lastGoodPollAt ?? 0) < FRESH_ENOUGH_MS;
   const pollUntil = Math.min(deadline - 30_000, Date.now() + DELIVER_POLL_MS);
-  const result: UserResult = {
+  const polled = !recentlyPolled && Date.now() < pollUntil ? await pollWithin(user, pollUntil) : undefined;
+  const result: Delivered = {
     userId: user.slackUserId,
     slot: due.slot,
-    ...(!recentlyPolled && Date.now() < pollUntil ? await pollWithin(user, pollUntil) : {}),
+    ...(polled ? { poll: polled.poll, pollTimedOut: polled.pollTimedOut, pending: polled.pending } : {}),
   };
 
   const fresh = (await getUser(user.slackUserId)) ?? user;
@@ -146,16 +169,26 @@ export async function deliverJob(userId: string): Promise<UserResult | null> {
   const user = await getUser(userId);
   if (!user) return null;
   const now = Date.now();
-  const result = await deliver(user, now, now + 10 * 60_000);
-  await recordRun("deliver", { ...result }, userId);
-  return result;
+  let result: Delivered;
+  try {
+    result = await deliver(user, now, now + 10 * 60_000);
+  } catch (err) {
+    await recordRun("deliver", { userId, ok: false, error: String(err).slice(0, 300) }, userId, Date.now() - now);
+    throw err;
+  }
+  const { pending, ...summary } = result;
+  await recordRun("deliver", { ...summary }, userId, Date.now() - now);
+  await pending; // the poll that outlasted the digest finishes inside this task
+  return summary;
 }
 
-// Background poll: fresh data ahead of a digest, or when it got old
+// Background poll: fresh data ahead of a digest, or when it got old. Awaited in full — the
+// poll's own deadline bounds it.
 export async function pollJob(userId: string): Promise<UserResult | null> {
   const user = await getUser(userId);
   if (!user) return null;
-  return { userId, ...(await pollWithin(user, Date.now() + BACKGROUND_POLL_MS)) };
+  const { errors, ...rest } = await pollUser(user, Date.now() + BACKGROUND_POLL_MS);
+  return { userId, poll: { ...rest, errorCount: errors.length } };
 }
 
 // Every 5 minutes (Cloud Scheduler): decide what needs doing and queue it. Task names keep each
@@ -181,11 +214,12 @@ export async function runTick(source: string, nowMs = Date.now()) {
     const age = nowMs - (user.lastPolledAt ?? 0);
 
     if (due) {
-      await queue("deliver", () => enqueue({ type: "deliver", userId }, { name: `deliver-${userId}-${due.slot}` }));
+      const retryWindow = Math.floor(nowMs / DELIVER_RETRY_WINDOW_MS);
+      await queue("deliver", () => enqueue({ type: "deliver", userId }, { name: `deliver-${userId}-${due.slot}-${retryWindow}` }));
       continue;
     }
     if (firstReportOverdue(user, nowMs)) {
-      await queue("firstReport", () => enqueue({ type: "first-report", userId }, { name: `first-report-${userId}` }));
+      await queue("firstReport", () => enqueue({ type: "first-report", userId }, { name: `first-report-${userId}-${slot}` }));
       continue;
     }
     if (paused) continue;

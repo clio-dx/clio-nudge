@@ -22,6 +22,7 @@ export interface NudgeUser {
   lastSentDate?: string;         // local YYYY-MM-DD of the last digest actually posted
   lastDigestIds?: string[];      // items in the last digest (to detect new ones)
   lastPolledAt?: number;
+  lastGoodPollAt?: number;       // last poll whose searches all went through (digests trust this one)
   firstScanPending?: boolean;    // set on install; cleared once a poll got through the 7-day backlog
   firstReportAt?: number;        // when the DM with the first check's result went out
   // Where each search left off: oldest-first results, so earlier pages never shift

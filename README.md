@@ -7,7 +7,7 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 - 📥 **내가 답장해야 할 질문** — 누가 1:1 DM, @멘션, 내가 시작한 스레드에서 나에게 물어봤는데 아직 답하지 않은 질문 (2시간이 지나면 알려줘요)
 - 📤 **상대에게 답장 받아야 할 질문** — 내가 물어봤는데 아직 답을 못 받은 질문 (24시간이 지나면 알려줘요)
 
-[![Add to Slack](https://platform.slack-edge.com/img/add_to_slack.png)](https://clio-nudge.vercel.app/api/slack/oauth)
+[![Add to Slack](https://platform.slack-edge.com/img/add_to_slack.png)](https://nudge-233887047351.asia-northeast3.run.app/api/slack/oauth)
 
 설치하면 안내 DM이 오고, 지난 7일 치 메시지를 바로 확인해서 몇 분 안에 찾은 질문을 DM으로 보내요. 기본값은 **평일 오전 8시에 하루 한 번**(Slack 프로필 시간대 기준)이고, 확인할 질문이 있을 때만 DM을 보내요.
 
@@ -71,77 +71,64 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 
 ---
 
-## 동작 방식
+### 피드백 보내기
 
-1. `/api/cron/tick`이 실행될 때마다, 알림 시각이 된 사용자에 대해
-2. Slack 검색으로 최근 메시지를 찾고 (`from:<@나>`, `<@나>`, `with:<@나>`) — 오래된 것부터 읽고 읽은 위치를 기억해서, 메시지가 많아도 다음 확인 때 이어서 읽어요
-3. 스레드·DM 흐름을 끝까지 읽어 이미 답이 왔는지 AI로 판단한 뒤
-4. 답이 없는 질문만 DM으로 보내요. 한 번 판단한 메시지는 다시 분류하지 않아요.
-5. 남는 시간에는 알림 시각이 아닌 사용자도 미리 확인해 둬서, 알림이 항상 최신 상태로 가요.
-
-같은 시각에 tick이 여러 번 와도(Vercel Cron + GitHub Actions) 사용자별로 한 번만 보내고, tick이 늦게 와도 2시간 안이면 놓친 알림을 이어서 보내요. Slack 확인이 오래 걸려도(속도 제한 등) 알림은 제시간에 직전 데이터로 먼저 보내고, 남은 확인은 다음 실행 때 이어서 해요.
-
-### 실행 주기 (중요)
-
-Vercel **Hobby** 플랜은 cron을 **하루 한 번**만 돌릴 수 있어요. 그래서 실행 경로가 두 개예요.
-
-| 트리거 | 주기 | 설정 |
-| --- | --- | --- |
-| Vercel Cron (`vercel.json`) | 매일 23:00 UTC = 오전 8시 KST | 자동 |
-| GitHub Actions (`.github/workflows/nudge-tick.yml`) | 매시간 | 이 저장소의 `main`에 있으면 자동. 시크릿 불필요 |
-
-- GitHub Actions 쪽은 GitHub OIDC 토큰으로 인증해요. 앱은 토큰이 `clio-dx/clio-nudge` 저장소의 `main` 브랜치, `nudge-tick.yml` 워크플로에서 발급된 것인지 확인해요. 저장소 이름이 바뀌면 Vercel 환경변수 `NUDGE_GITHUB_REPOSITORY`를 설정하세요.
-- 앱 주소가 `https://clio-nudge.vercel.app`이 아니면 GitHub 저장소 변수(Settings → Variables) `NUDGE_APP_URL`을 설정하세요.
-- 공개 저장소는 60일 동안 활동이 없으면 GitHub가 예약 워크플로를 꺼요. 그러면 Actions 탭에서 다시 켜 주세요.
-- 시간별 실행이 꺼져 있으면 `/nudge` 설정 화면과 일정 변경 응답에 경고가 떠요. 그동안에는 **한국 시간 오전 8시에 맞춘 일정**만 알림이 오고(다른 시간대 사용자는 해당 없음), `/nudge 새로고침`은 언제든 동작해요.
-- 바로 실행해 보려면 GitHub Actions 탭에서 **Nudge hourly tick → Run workflow**를 누르거나, Vercel 대시보드 **Settings → Cron Jobs → Run**을 누르세요.
+- 알림·목록 아래 **🙋 잘못 찾은 질문 알려주기**를 누르면, 잘못 찾은 질문을 고르고 이유(질문이 아니에요 / 나와 상관없어요 / 이미 답했어요)를 알려줄 수 있어요. 고른 질문은 목록에서 바로 지울 수도 있어요.
+- Nudge가 놓친 질문은 그 메시지의 **⋯ → Nudge가 놓친 질문**을 누르면 목록에 추가되고 기록돼요.
+- Nudge DM에 `의견 …`이라고 입력하면 자유 의견으로 저장돼요.
+- 모은 피드백은 판단 정확도를 확인하고 나중에 AI를 다듬는(파인튜닝) 데 써요.
 
 ---
 
-## 직접 배포하기
+## 동작 방식 (GCP)
 
-### 1. Slack 앱
+설계와 이전 기록은 [docs/gcp-migration.md](docs/gcp-migration.md)에 있어요.
 
-[api.slack.com/apps](https://api.slack.com/apps) → **Create New App → From an app manifest**에 [`slack-app-manifest.json`](slack-app-manifest.json)을 붙여 넣으세요(도메인은 본인 배포 주소로 바꾸기). App Home에서 **Home Tab**, **Messages Tab**, "Allow users to send Slash commands and messages from the messages tab"을 켜야 해요. 홈 탭에는 연결 전이면 시작 방법과 **Nudge 연결하기** 버튼이, 연결 후면 내 설정이 보이고, Nudge DM에서는 명령어를 바로 입력할 수 있어요. 이미 만든 앱이면 **App Manifest**에 이 파일을 다시 붙여 넣고 Save하세요(스코프가 그대로면 다시 설치할 필요 없어요).
-
-- User scopes: `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `search:read`, `users:read`
-- Bot scopes: `chat:write`, `im:write`, `im:history`, `commands` (`im:history`는 Nudge DM에 입력한 `설정`, `목록` 같은 말을 받기 위해 필요해요)
-- Event Subscriptions: Request URL `https://<배포 주소>/api/slack/events`, bot events `app_home_opened`(홈 탭·첫 안내), `message.im`(DM 명령어)
-- 스코프를 바꾼 뒤에는 사용자가 한 번 다시 설치(Add to Slack)해야 새 권한이 적용돼요.
-
-### 2. 환경변수 (Vercel)
-
-| 이름 | 설명 |
+| 구성 | 하는 일 |
 | --- | --- |
-| `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET` | Slack 앱 Basic Information |
-| `NEXT_PUBLIC_APP_URL` | 배포 주소 (예: `https://clio-nudge.vercel.app`) |
-| `CRON_SECRET` | Vercel Cron 인증용 임의 문자열 |
-| `KV_REST_API_URL`, `KV_REST_API_TOKEN` | Upstash Redis (Vercel Marketplace 연동 시 자동) |
-| `AI_MODEL` | 선택. 기본값 `anthropic/claude-haiku-4.5` (Vercel AI Gateway) |
-| `NUDGE_GITHUB_REPOSITORY` | 선택. 시간별 tick을 보내는 저장소 (기본값 `clio-dx/clio-nudge`) |
+| Cloud Run `nudge` | Slack 이벤트·명령·버튼, OAuth, 예약 실행, 백그라운드 작업. Slack 요청은 서명을 확인한 뒤 바로 응답하고 실제 처리는 Cloud Tasks로 넘겨요 |
+| Cloud Run `nudge-admin` | 관리자 페이지(IAP 로그인, team-dx@·yoonchul@만) — 사용자 수, 실행 기록, AI 호출 통계, 로그, 피드백 내보내기 |
+| Cloud Scheduler | 5분마다 `/api/cron/tick` 호출 → 알림 시각이 된 사용자·미리 확인할 사용자를 Cloud Tasks에 넣어요 |
+| Cloud Tasks | `nudge-slack`(Slack 응답), `nudge-work`(수집·알림, 동시 2개). 작업 이름으로 사용자·시각별 한 번만 실행해요 |
+| Firestore (서울) | 사용자, 추적 중 질문, 확인 기록, 잠금, 실행 기록, AI 호출 기록, 피드백 |
+| Vertex AI | Gemini 3.8 Flash(생각 수준 LOW)로 답이 왔는지 판단하고 주제를 요약해요. 응답이 늦거나 429가 나면 재시도하고, 세 번째부터는 Gemini 2.5 Flash로 넘겨요 |
+| Secret Manager | Slack Client ID·Secret·Signing Secret |
 
-### 3. 개발
+1. 알림 20분 전에 미리 Slack을 확인해 두고(검색 `from:<@나>`, `<@나>`, `with:<@나>` — 오래된 것부터 읽고 위치를 기억해요)
+2. 스레드·DM 흐름을 읽어 이미 답이 왔는지 AI로 판단한 뒤
+3. 알림 시각에는 저장된 데이터로 바로 보내요. 한 번 판단한 메시지는 다시 분류하지 않아요.
+4. 처음 연결하면 최대 12분 동안 지난 7일 치를 끝까지 확인하고 결과를 DM으로 보내요.
+
+## 운영
 
 ```bash
-npm install
-npm run dev     # 로컬 실행
-npm test        # 일정 계산·명령어 해석·질문 판별 단위 테스트
+# 배포 (로컬 Docker로 빌드 → Artifact Registry → Cloud Run 두 서비스)
+CLOUDSDK_ACTIVE_CONFIG_NAME=nudge-deployer deploy/gcp/deploy.sh
+
+# 테스트
+npm test                 # 단위·흐름 테스트 (메모리 저장소)
+npm run test:firestore   # 실제 Firestore(nudge-test DB)로 저장소 동작 확인 — GOOGLE_APPLICATION_CREDENTIALS 필요
 npm run lint
 ```
 
-### 관리용 엔드포인트
+- 처음 한 번의 IAM 설정은 [deploy/gcp/bootstrap.ps1](deploy/gcp/bootstrap.ps1)에 있어요.
+- 환경변수(배포 스크립트가 설정): `NUDGE_ROLE`(public/admin), `NUDGE_TASKS=cloud`, `NUDGE_SECRETS=gcp`, `APP_URL`·`NUDGE_SELF_URL`·`NEXT_PUBLIC_APP_URL`(공개 서비스 주소), 선택 `AI_MODEL`(기본 `gemini-3.8-flash`), `AI_FALLBACK_MODEL`(기본 `gemini-2.5-flash`), `NUDGE_IAP_AUDIENCE`.
+- 내부 엔드포인트 `/api/cron/tick`, `/api/tasks/run`은 `nudge-runtime@` 서비스 계정의 Google ID 토큰만 받아요.
 
-- `GET /api/cron/tick` — `Authorization: Bearer $CRON_SECRET`. 알림 시각이 된 사용자를 처리하고 결과 요약(JSON)을 돌려줘요.
-- `POST /api/admin/clear-user` — `Authorization: Bearer $CRON_SECRET`, body `{"userId": "U..."}`. 사용자의 추적 항목을 모두 지워요.
+### Slack 앱
+
+[`slack-app-manifest.json`](slack-app-manifest.json)을 Slack 앱 설정의 **App Manifest**에 붙여 넣고 Save하세요(스코프가 그대로면 다시 설치할 필요 없어요). 스코프를 바꾸면 사용자가 한 번 다시 설치(Add to Slack)해야 해요.
+
+- User scopes: `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `search:read`, `users:read`
+- Bot scopes: `chat:write`, `im:write`, `im:history`, `commands`
+- Event Subscriptions: `app_home_opened`, `message.im` · Interactivity: 버튼·모달·메시지 단축키 `nudge_missed`
 
 ### 한계
 
-- 한 tick은 최대 5분 동안 돌아요. 같은 시각에 알림 받는 사용자가 많으면 일부는 직전에 확인해 둔 데이터로 알림을 보내고, 남은 확인은 다음 실행 때 이어서 해요.
-- Slack 검색 API(`search.messages`)는 Tier 2(분당 약 20회) 제한이 있어서 사용자 수가 많아지면 느려질 수 있어요.
+- Slack 검색 API(`search.messages`)는 Tier 2(분당 약 20회) 제한이 있어서, 사용자가 많아지면 `nudge-work` 큐의 동시 실행 수를 함께 조절해야 해요.
 
 ## 기술 스택
 
-- [Next.js](https://nextjs.org) App Router
-- [Vercel AI SDK](https://sdk.vercel.ai) + AI Gateway
-- [Upstash Redis](https://upstash.com)
+- [Next.js](https://nextjs.org) App Router (standalone, Cloud Run)
+- Google Cloud: Cloud Run, Firestore, Cloud Tasks, Cloud Scheduler, Vertex AI(Gemini), Secret Manager, IAP
 - [Slack Web API](https://api.slack.com)

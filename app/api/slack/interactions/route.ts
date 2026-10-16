@@ -22,9 +22,18 @@ export async function POST(req: NextRequest) {
   }
 
   if (payload.type === "block_actions") {
-    await enqueue({ type: "slack-actions", payload }, { queue: "slack" }).catch((err) =>
-      console.error("could not queue interaction:", err)
-    );
+    try {
+      await enqueue({ type: "slack-actions", payload }, { queue: "slack" });
+    } catch (err) {
+      console.error("could not queue interaction:", String(err).slice(0, 300));
+      if (payload.response_url) {
+        await fetch(payload.response_url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ response_type: "ephemeral", replace_original: false, text: "😵 처리하다가 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요." }),
+        }).catch(() => {});
+      }
+    }
   }
 
   return NextResponse.json({ ok: true });

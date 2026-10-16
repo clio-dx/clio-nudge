@@ -23,7 +23,9 @@ async function firstReportJob(userId: string): Promise<boolean> {
   const user = await getUser(userId);
   if (!user) return false;
   const stats = await pollUser(user, Date.now() + 300_000);
-  return sendFirstReport((await getUser(userId)) ?? user, stats.skipped ? undefined : stats);
+  // "poll already running": onboarding (or 🔄) is still at it and sends its own result
+  if (stats.skipped) return false;
+  return sendFirstReport((await getUser(userId)) ?? user, stats);
 }
 
 // Slack work is chatty and frequent: only the heavier jobs leave a run record
@@ -31,6 +33,21 @@ const RECORDED = new Set<Job["type"]>(["onboard", "poll", "first-report", "migra
 
 export async function runJob(job: Job): Promise<unknown> {
   const started = Date.now();
+  try {
+    const result = await dispatch(job);
+    if (RECORDED.has(job.type)) {
+      await recordRun(`job:${job.type}`, { ...(result && typeof result === "object" ? result : {}) }, userOf(job), Date.now() - started);
+    }
+    return result;
+  } catch (err) {
+    await recordRun(`job:${job.type}`, { ok: false, error: String(err).slice(0, 300) }, userOf(job), Date.now() - started);
+    throw err;
+  }
+}
+
+const userOf = (job: Job) => ("userId" in job ? job.userId : undefined);
+
+async function dispatch(job: Job): Promise<unknown> {
   let result: unknown;
   switch (job.type) {
     case "slack-event":
@@ -60,10 +77,6 @@ export async function runJob(job: Job): Promise<unknown> {
     case "vercel-state":
       result = await setVercelState(job.action);
       break;
-  }
-  if (RECORDED.has(job.type)) {
-    const userId = "userId" in job ? job.userId : undefined;
-    await recordRun(`job:${job.type}`, { ...(result && typeof result === "object" ? result : {}) }, userId, Date.now() - started);
   }
   return result;
 }

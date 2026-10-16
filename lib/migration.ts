@@ -89,7 +89,11 @@ export async function applyExport(data: MigrationExport): Promise<Omit<ImportRes
   };
 }
 
+// `freeze`: stop Vercel first (no more ticks or changes there), then take the final copy. After
+// the Slack URLs point here, lock the export (vercel-state "lock") so this can't run again and
+// undo what people did on GCP.
 export async function importFromVercel({ freeze = false }: { freeze?: boolean } = {}): Promise<ImportResult> {
+  if (freeze) await setVercelState("freeze");
   const data = await fetchExport();
   const counts = await applyExport(data);
 
@@ -101,10 +105,5 @@ export async function importFromVercel({ freeze = false }: { freeze?: boolean } 
   ];
   for (const [name, value] of secrets) if (value && (await putSecret(name, value))) secretsUpdated.push(name);
 
-  const result: ImportResult = { ...counts, secretsUpdated };
-  if (freeze) {
-    await setVercelState("freeze");
-    result.frozen = true;
-  }
-  return result;
+  return { ...counts, secretsUpdated, ...(freeze ? { frozen: true } : {}) };
 }

@@ -5,11 +5,12 @@ import { logAiCall } from "@/lib/ai-log";
 const MODEL = process.env.AI_MODEL || "gemini-3.8-flash";
 // Used when MODEL can't be reached at all (not enabled for the project, retired, …)
 const FALLBACK_MODEL = process.env.AI_FALLBACK_MODEL || "gemini-2.5-flash";
-// Bounded so a slow model call can't hold up a poll
-const AI_TIMEOUT_MS = 20_000;
-// Vertex answers 429 when shared capacity is briefly short: retry a few times with jitter, and
-// only after that stop calling the model for a while
+// gemini-3.8-flash answers in ~2 s but now and then hangs for 40 s: cut it off early
+const AI_TIMEOUT_MS = 10_000;
+// Vertex answers 429 (or hangs) when shared capacity is briefly short: retry with jitter — from
+// the third attempt on the fallback model — and only after that stop calling for a while
 const RATE_LIMIT_RETRIES = 3;
+const FALLBACK_FROM_ATTEMPT = 2;
 const retryBaseMs = () => Number(process.env.AI_RETRY_BASE_MS ?? 1000);
 const RATE_LIMIT_PAUSE_MS = 30_000;
 // When no model is reachable at all (permission errors), wait longer before trying again
@@ -41,8 +42,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function generate(task: string, prompt: string): Promise<string> {
   if (!aiAvailable()) throw new AiUnavailableError("AI paused");
-  const model = useFallback ? FALLBACK_MODEL : MODEL;
+  const preferred = useFallback ? FALLBACK_MODEL : MODEL;
   for (let attempt = 0; ; attempt++) {
+    const model = attempt >= FALLBACK_FROM_ATTEMPT ? FALLBACK_MODEL : preferred;
     const started = Date.now();
     try {
       // Verdicts are stored for good, so the same message must always get the same one
@@ -55,7 +57,7 @@ async function generate(task: string, prompt: string): Promise<string> {
         await sleep(retryBaseMs() * 2 ** attempt * (0.5 + Math.random()));
         continue;
       }
-      if (!isRateLimit(err) && isNoAccess(err) && model !== FALLBACK_MODEL) {
+      if (!isRateLimit(err) && isNoAccess(err) && preferred !== FALLBACK_MODEL) {
         console.error(`AI model ${model} is not reachable; using ${FALLBACK_MODEL}:`, String(err).slice(0, 200));
         useFallback = true;
         return generate(task, prompt);

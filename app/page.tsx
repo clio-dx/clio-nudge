@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { redirect } from "next/navigation";
 import { ScheduleGuide } from "./components/ScheduleGuide";
 import { DIGEST_CALLOUTS, SlackDigestMock } from "./components/SlackDigestMock";
 import { SECTION_NAMES } from "@/lib/messages";
@@ -62,6 +63,8 @@ export default async function Home({
 }: {
   searchParams: Promise<{ installed?: string; team?: string; error?: string }>;
 }) {
+  // The admin service (behind IAP) has no landing page of its own
+  if (process.env.NUDGE_ROLE === "admin") redirect("/admin");
   const { installed, team, error } = await searchParams;
   const slackUrl = team ? `https://app.slack.com/client/${encodeURIComponent(team)}` : "https://app.slack.com/client";
 

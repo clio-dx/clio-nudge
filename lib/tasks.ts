@@ -23,8 +23,9 @@ export interface EnqueueOptions {
 // True when queued (or run), false when a task with that name already exists
 export async function enqueue(job: Job, opts: EnqueueOptions = {}): Promise<boolean> {
   if (process.env.NUDGE_TASKS !== "cloud") {
+    // Like /api/tasks/run: a failing job is logged, it doesn't fail whoever queued it
     const { runJob } = await import("@/lib/jobs");
-    await runJob(job);
+    await runJob(job).catch((err) => console.error(`job ${job.type} failed:`, String(err).slice(0, 300)));
     return true;
   }
   const queue = opts.queue ?? "work";
@@ -43,7 +44,8 @@ export async function enqueue(job: Job, opts: EnqueueOptions = {}): Promise<bool
   if (opts.name) task.name = `${parent}/tasks/${taskId(opts.name)}`;
   if (opts.delaySeconds) task.scheduleTime = new Date(Date.now() + opts.delaySeconds * 1000).toISOString();
   try {
-    await gcpFetch(`https://cloudtasks.googleapis.com/v2/${parent}/tasks`, { body: { task } });
+    // Slack routes call this inside Slack's 3 seconds
+    await gcpFetch(`https://cloudtasks.googleapis.com/v2/${parent}/tasks`, { body: { task }, timeoutMs: queue === "slack" ? 2500 : 15_000 });
     return true;
   } catch (err) {
     if (err instanceof GcpError && err.status === 409) return false; // already queued under that name

@@ -14,13 +14,23 @@ interface Jwk {
 }
 
 let cache: { keys: Jwk[]; fetchedAt: number } | null = null;
+let lastForced = 0;
 
+// `force` (an unknown key id) refetches at most once a minute, so junk tokens can't make us
+// hammer Google; a failed fetch keeps the keys we had
 async function googleKeys(force: boolean): Promise<Jwk[]> {
-  if (!force && cache && Date.now() - cache.fetchedAt < 60 * 60 * 1000) return cache.keys;
-  const res = await fetch(GOOGLE_CERTS);
-  if (!res.ok) throw new Error(`google certs ${res.status}`);
-  const body = (await res.json()) as { keys?: Jwk[] };
-  cache = { keys: body.keys ?? [], fetchedAt: Date.now() };
+  const fresh = cache && Date.now() - cache.fetchedAt < 60 * 60 * 1000;
+  if (cache && (force ? Date.now() - lastForced < 60_000 : fresh)) return cache.keys;
+  if (force) lastForced = Date.now();
+  try {
+    const res = await fetch(GOOGLE_CERTS, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`google certs ${res.status}`);
+    const body = (await res.json()) as { keys?: Jwk[] };
+    cache = { keys: body.keys ?? [], fetchedAt: Date.now() };
+  } catch (err) {
+    if (!cache) throw err;
+    console.error("google certs refresh failed, keeping the old keys:", String(err).slice(0, 200));
+  }
   return cache.keys;
 }
 

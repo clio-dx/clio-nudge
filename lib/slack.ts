@@ -3,14 +3,17 @@ import crypto from "crypto";
 import { slackSigningSecret } from "@/lib/gcp";
 
 // Create a WebClient with a specific token
+// attachOriginalToWebAPIRequestError: false — otherwise a failed request carries the HTTP request
+// (with "Authorization: Bearer xox…") into the error, and console.error prints it to the logs
 export function createSlackClient(token: string): WebClient {
-  return new WebClient(token);
+  return new WebClient(token, { attachOriginalToWebAPIRequestError: false });
 }
 
 // For cron work (polling, digests): bounded request time and retries, so a rate-limited or
 // hung call can't hold a run for the client's default ~30 minutes of retries.
 export function createBoundedClient(token: string): WebClient {
   return new WebClient(token, {
+    attachOriginalToWebAPIRequestError: false,
     timeout: 20_000,
     retryConfig: { retries: 2, maxRetryTime: 45_000 },
   });

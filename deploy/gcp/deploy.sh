@@ -22,11 +22,11 @@ if [ "$WHICH" = all ] || [ "$WHICH" = public ]; then
   # min 1 instance: no cold start inside Slack's 3-second window (request billing, so it idles cheaply)
   gcloud run deploy nudge --project $P --region $R --image "$IMG" --service-account $RUNTIME \
     --cpu 1 --memory 1Gi --concurrency 40 --min-instances 1 --max-instances 10 --timeout 1800 \
-    --cpu-boost --set-env-vars "NUDGE_ROLE=public,$COMMON_ENV" --quiet
+    --cpu-boost --update-env-vars "NUDGE_ROLE=public,$COMMON_ENV" --quiet
 fi
 if [ "$WHICH" = all ] || [ "$WHICH" = admin ]; then
   gcloud run deploy nudge-admin --project $P --region $R --image "$IMG" --service-account $RUNTIME \
     --cpu 1 --memory 1Gi --concurrency 20 --min-instances 0 --max-instances 2 --timeout 300 \
-    --set-env-vars "NUDGE_ROLE=admin,$COMMON_ENV" --quiet
+    --update-env-vars "NUDGE_ROLE=admin,$COMMON_ENV" --quiet
 fi
 echo "deployed $IMG"

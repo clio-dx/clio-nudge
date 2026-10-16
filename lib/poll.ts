@@ -1,7 +1,7 @@
 import type { WebClient } from "@slack/web-api";
 import { createBoundedClient, decodeSlackEntities, getConversationLabel, getUserName, isDMOrMPIM, slackErrorCode } from "@/lib/slack";
 import {
-  acquireLock,
+  acquireOwnedLock,
   addFollowUp,
   getSeen,
   getUserFollowUps,
@@ -1063,7 +1063,8 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
   const stats = emptyStats();
   const lockKey = `nudge:lock:poll:${user.slackUserId}`;
   // Held for as long as this poll may run
-  if (!(await acquireLock(lockKey, Math.max(300, Math.ceil((deadline - Date.now()) / 1000) + 60)))) {
+  const lockOwner = await acquireOwnedLock(lockKey, Math.max(300, Math.ceil((deadline - Date.now()) / 1000) + 120));
+  if (!lockOwner) {
     stats.skipped = "poll already running";
     return stats;
   }
@@ -1102,16 +1103,20 @@ export async function pollUser(user: NudgeUser, deadline = Date.now() + 200_000)
       }
     }
     await fillSummaries(ctx);
+    // A whole search failing ("incoming: …") read nothing: not a basis for a digest, and the
+    // first scan isn't done
+    const searchFailed = stats.errors.some((e) => /^(incoming|outgoing):/.test(e));
     // The first scan after installing is done once a poll read everything it found
     const caughtUp =
-      stats.incomplete.length === 0 && stats.incoming.deferred === 0 && stats.outgoing.deferred === 0;
+      !searchFailed && stats.incomplete.length === 0 && stats.incoming.deferred === 0 && stats.outgoing.deferred === 0;
     await updateUser(user.slackUserId, {
       lastPolledAt: started,
+      ...(searchFailed ? {} : { lastGoodPollAt: started }),
       searchCursors: ctx.cursors,
       ...(user.firstScanPending && caughtUp ? { firstScanPending: false } : {}),
     });
   } finally {
-    await releaseLock(lockKey);
+    await releaseLock(lockKey, lockOwner);
     stats.ms = Date.now() - started;
     // Counts only (no message text) — e.g. searched.with shows whether DM discovery works
     const summary = { ...stats, errors: stats.errors.length, firstError: stats.errors[0]?.slice(0, 200) };

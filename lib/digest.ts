@@ -147,6 +147,18 @@ function sectionBlocks(
   return blocks;
 }
 
+// The rows a digest or list shows, in order (feedback modal: which one was wrong)
+export function digestGroups(v: Visible): { kind: FollowUpKind; channel: string; threadTs: string[]; label: string }[] {
+  return (["incoming", "outgoing"] as const).flatMap((kind) =>
+    group(v[kind], kind).map((g) => ({
+      kind,
+      channel: g.first.channel,
+      threadTs: g.members.map((m) => m.threadTs),
+      label: `${kind === "incoming" ? "📥" : "📤"} ${g.first.summary || fallbackText(g.first.originalMessage)}`,
+    }))
+  );
+}
+
 // Rows per section, as shown in digests (grouped)
 export function groupCounts(v: Visible): { incoming: number; outgoing: number } {
   return { incoming: group(v.incoming, "incoming").length, outgoing: group(v.outgoing, "outgoing").length };

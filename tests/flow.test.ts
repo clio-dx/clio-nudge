@@ -9,14 +9,15 @@ import { classifyResponse, classifyUserMessage, resumeAi } from "../lib/ai.ts";
 import { dmResponder, parseDmText, runCommand } from "../lib/nudge-command.ts";
 import { firstReport } from "../lib/first-report.ts";
 import { applyExport } from "../lib/migration.ts";
+import { runJob } from "../lib/jobs.ts";
 import { dismissGroup } from "../lib/dismiss.ts";
 import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
 import { JUDGE_VERSION, pollUser } from "../lib/poll.ts";
 import { handleAppHomeOpened } from "../lib/home.ts";
 import { CONNECT_URL } from "../lib/messages.ts";
-import { runTick } from "../lib/tick.ts";
+import { hourlyTriggerActive, runTick } from "../lib/tick.ts";
 import { getUser, saveUser, updateUser, type NudgeUser } from "../lib/db.ts";
-import { acquireLock, addFollowUp, firstTime, getSeen, getSeenEntries, getUserFollowUps, itemId, markSeen, releaseLock, removeFollowUp } from "../lib/store.ts";
+import { acquireLock, acquireOwnedLock, addFollowUp, firstTime, getSeen, getSeenEntries, getUserFollowUps, itemId, markSeen, recordTick, releaseLock, removeFollowUp } from "../lib/store.ts";
 import { buildDigestBlocks, loadVisible, PROMISED_LABEL, QUICK_ACTIONS, visibleIds, welcomeBlocks } from "../lib/digest.ts";
 import { currentSlot, localParts } from "../lib/schedule.ts";
 
@@ -815,7 +816,7 @@ test("hourly mode only re-sends when something new shows up", async () => {
   // needs the per-slot lock cleared; in production the next tick is a new slot.
   msg({ channel: "DC", user: "UC", text: "회의실 예약하셨나요?", hoursAgo: 3 });
   // …and the stored data is older than a pre-poll would leave it, so this digest polls first
-  await updateUser(ME, { lastSlot: prevSlot, lastDigestIds: visible, lastSentDate, lastPolledAt: Date.now() - 2 * HOUR * 1000 });
+  await updateUser(ME, { lastSlot: prevSlot, lastDigestIds: visible, lastSentDate, lastGoodPollAt: Date.now() - 2 * HOUR * 1000 });
   await releaseLock(`nudge:lock:digest:${ME}:${currentSlot(Date.now())}`);
   await runTick("hourly-2");
   assert.equal(workspace.posted.length, sameDay ? 1 : 2, "new item → digest");
@@ -933,4 +934,59 @@ test("the GCP import writes users, questions, seen ids and one-time flags, and a
   const again = await applyExport({ ...data, followups: [data.followups[1]] });
   assert.equal(again.removedFollowups, 1);
   assert.equal((await getUserFollowUps(ME, "incoming")).length, 0);
+});
+
+test("a digest that fails to send frees its slot, so the next tick sends it", async () => {
+  const hour = localParts(Date.now(), "Asia/Seoul").hour;
+  await install({ schedule: { kind: "times", hours: [hour], weekdaysOnly: false } });
+  workspace.postFailures = 1; // Slack is down for the first attempt
+  const first = await runTick("tick-1");
+  assert.equal(first.queued.deliver, 1);
+  assert.equal(workspace.posted.length, 0);
+  assert.notEqual((await getUser(ME))!.lastSlot, currentSlot(Date.now()), "the slot isn't marked as handled");
+
+  await runTick("tick-2"); // 5 minutes later
+  assert.equal(workspace.posted.length, 1, "sent on the retry");
+  await runTick("tick-3");
+  assert.equal(workspace.posted.length, 1, "and only once");
+});
+
+test("a late lock holder can't release someone else's lock", async () => {
+  const mine = await acquireOwnedLock("nudge:lock:poll:UX", 1);
+  assert.ok(mine);
+  await new Promise((r) => setTimeout(r, 1100)); // expired
+  const theirs = await acquireOwnedLock("nudge:lock:poll:UX", 60);
+  assert.ok(theirs);
+  await releaseLock("nudge:lock:poll:UX", mine!); // the old poll finishing late
+  assert.equal(await acquireLock("nudge:lock:poll:UX", 60), false, "the newer lock still holds");
+  await releaseLock("nudge:lock:poll:UX", theirs!);
+  assert.equal(await acquireLock("nudge:lock:poll:UX", 60), true);
+});
+
+test("the scheduler counts as running once a tick landed in the last 20 minutes", async () => {
+  assert.equal(await hourlyTriggerActive(), false, "no tick yet");
+  await recordTick(currentSlot(Date.now()), "cloud-scheduler");
+  assert.equal(await hourlyTriggerActive(), true, "right after the first tick — no '알림이 늦을 수 있어요' warning");
+  assert.equal(await hourlyTriggerActive(Date.now() + 25 * 60_000), false, "silent for 25 minutes");
+});
+
+test("the tick's first-report catch-up leaves a user to onboarding while its poll runs", async () => {
+  await install({ installedAt: Date.now() - 30 * 60_000, firstScanPending: true, lastSlot: currentSlot(Date.now()) });
+  await acquireLock(`nudge:lock:poll:${ME}`, 300); // onboarding's poll
+  assert.deepEqual(await runJob({ type: "first-report", userId: ME }), { sent: false });
+  assert.equal(workspace.posted.length, 0);
+  assert.equal((await getUser(ME))!.firstReportAt, undefined, "onboarding still sends it");
+});
+
+test("a poll whose searches failed doesn't count as fresh data for the next digest", async () => {
+  const user = await install();
+  await pollUser(user);
+  const good = (await getUser(ME))!.lastGoodPollAt;
+  assert.ok(good);
+  workspace.failSearch = true;
+  await pollUser((await getUser(ME))!);
+  workspace.failSearch = false;
+  const after = (await getUser(ME))!;
+  assert.ok(after.lastPolledAt! >= good!);
+  assert.equal(after.lastGoodPollAt, good, "only a poll that read everything counts");
 });

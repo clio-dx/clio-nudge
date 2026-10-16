@@ -73,7 +73,12 @@ export async function GET(req: NextRequest) {
         console.error("welcome DM failed:", err);
       }
     }
-    await enqueue({ type: "onboard", userId: slackUserId, isNew: !existing, appId: data.app_id }, { name: `onboard-${slackUserId}-${Date.now()}` });
+    try {
+      await enqueue({ type: "onboard", userId: slackUserId, isNew: !existing, appId: data.app_id }, { name: `onboard-${slackUserId}-${Date.now()}` });
+    } catch (err) {
+      // The tick's first-report catch-up covers a new user after 20 minutes
+      console.error("could not queue onboarding:", String(err).slice(0, 300));
+    }
 
     const installed = existing ? "updated" : "new";
     return NextResponse.redirect(`${appUrl}?installed=${installed}&team=${encodeURIComponent(data.team.id)}`);

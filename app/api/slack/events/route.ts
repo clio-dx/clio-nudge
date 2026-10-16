@@ -27,17 +27,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ challenge: payload.challenge });
   }
 
-  // Slack retries when we're slow to answer; the first delivery is already being handled
-  if (req.headers.get("x-slack-retry-num")) {
+  // Slack retries when we were slow to answer: that first delivery is already being handled.
+  // Retries after an error (http_error, e.g. the secret wasn't loaded yet) are processed.
+  if (req.headers.get("x-slack-retry-num") && req.headers.get("x-slack-retry-reason") === "http_timeout") {
     return NextResponse.json({ ok: true });
   }
 
   const relevant =
     isPersonTypingInNudgeDm(payload) || (payload.type === "event_callback" && payload.event?.type === "app_home_opened");
   if (relevant) {
-    await enqueue({ type: "slack-event", payload }, { queue: "slack" }).catch((err) =>
-      console.error("could not queue Slack event:", err)
-    );
+    try {
+      await enqueue({ type: "slack-event", payload }, { queue: "slack" });
+    } catch (err) {
+      console.error("could not queue Slack event:", String(err).slice(0, 300));
+      return NextResponse.json({ error: "busy" }, { status: 500 }); // Slack retries
+    }
   }
   return NextResponse.json({ ok: true });
 }
