@@ -1,5 +1,6 @@
 import { WebClient } from "@slack/web-api";
 import crypto from "crypto";
+import { slackSigningSecret } from "@/lib/gcp";
 
 // Create a WebClient with a specific token
 export function createSlackClient(token: string): WebClient {
@@ -20,14 +21,19 @@ export function slackErrorCode(err: unknown): string | undefined {
   return (err as { data?: { error?: string } })?.data?.error;
 }
 
-export function verifySlackRequest(
+// The signing secret comes from Secret Manager; without it nothing passes (and it says so)
+export async function verifySlackRequest(
   signature: string | null,
   timestamp: string | null,
   body: string
-): boolean {
+): Promise<boolean> {
   if (!signature || !timestamp) return false;
 
-  const signingSecret = process.env.SLACK_SIGNING_SECRET!;
+  const signingSecret = await slackSigningSecret();
+  if (!signingSecret) {
+    console.error("Slack signing secret missing: rejecting every Slack request");
+    return false;
+  }
   const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 60 * 5;
 
   if (parseInt(timestamp) < fiveMinutesAgo) return false;

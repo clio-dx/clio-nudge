@@ -1,5 +1,5 @@
-import { redis } from "./redis";
-import type { Schedule } from "./schedule";
+import { backend, clean } from "@/lib/store/backend";
+import type { Schedule } from "@/lib/schedule";
 
 export interface NudgeUser {
   slackUserId: string;
@@ -33,47 +33,43 @@ export interface NudgeUser {
   timezone?: string;             // "KST" | "PT"
 }
 
-const USERS_KEY = "nudge:users";
-const USER_PREFIX = "nudge:user:";
+// users/{slackUserId}
+const userPath = (slackUserId: string) => `users/${slackUserId.replace(/\//g, "_")}`;
 
 // Preferences survive a reinstall: only credentials are replaced.
 export async function saveUser(user: NudgeUser): Promise<NudgeUser> {
-  const key = `${USER_PREFIX}${user.slackUserId}`;
-  const existing = await redis.get<NudgeUser>(key);
-  const merged = existing ? { ...existing, ...user } : user;
-  await redis.set(key, merged);
-  await redis.sadd(USERS_KEY, user.slackUserId);
-  return merged;
+  const path = userPath(user.slackUserId);
+  return backend.transaction(async (tx) => {
+    const existing = await tx.get<NudgeUser>(path);
+    const merged = clean(existing ? { ...existing, ...user } : user);
+    tx.set(path, merged);
+    return merged;
+  });
 }
 
 export async function getUser(slackUserId: string): Promise<NudgeUser | null> {
-  const key = `${USER_PREFIX}${slackUserId}`;
-  return redis.get<NudgeUser>(key);
+  return backend.get<NudgeUser>(userPath(slackUserId));
 }
 
 export async function getAllUsers(): Promise<NudgeUser[]> {
-  const userIds = await redis.smembers(USERS_KEY);
-  if (userIds.length === 0) return [];
-
-  const users = await redis.mget<(NudgeUser | null)[]>(...userIds.map((id) => `${USER_PREFIX}${id}`));
-  return users.filter((u): u is NudgeUser => u !== null);
+  return (await backend.query<NudgeUser>("users")).map((r) => r.data).filter((u) => !!u.slackUserId);
 }
 
 export async function removeUser(slackUserId: string): Promise<void> {
-  const key = `${USER_PREFIX}${slackUserId}`;
-  await redis.del(key);
-  await redis.srem(USERS_KEY, slackUserId);
+  await backend.delete(userPath(slackUserId));
 }
 
+// A field set to undefined is removed
 export async function updateUser(
   slackUserId: string,
   updates: Partial<NudgeUser>
 ): Promise<NudgeUser | null> {
-  const existing = await getUser(slackUserId);
-  if (!existing) return null;
-
-  const key = `${USER_PREFIX}${slackUserId}`;
-  const merged = { ...existing, ...updates };
-  await redis.set(key, merged);
-  return merged;
+  const path = userPath(slackUserId);
+  return backend.transaction(async (tx) => {
+    const existing = await tx.get<NudgeUser>(path);
+    if (!existing) return null;
+    const merged = clean({ ...existing, ...updates });
+    tx.set(path, merged);
+    return merged;
+  });
 }

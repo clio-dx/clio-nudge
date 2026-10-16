@@ -1,4 +1,4 @@
-import { getUserFollowUps, itemId, type FollowUp, type FollowUpKind } from "@/lib/redis";
+import { getUserFollowUps, itemId, type FollowUp, type FollowUpKind } from "@/lib/store";
 import { decodeSlackEntities, escapeSlackText, getThreadLink } from "@/lib/slack";
 import type { NudgeUser } from "@/lib/db";
 import { REFRESH_LABEL, SECTION_NAMES, WELCOME_NOTE, WELCOME_TEXT } from "@/lib/messages";

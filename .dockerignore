@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+.github
+.vercel
+tests
+docs
+deploy
+*.md
+*.tsbuildinfo
+.env*

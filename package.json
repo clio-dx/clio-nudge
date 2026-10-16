@@ -7,15 +7,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import ./tests/register.mjs --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-isolation=none \"tests/*.test.ts\""
+    "test": "node --import ./tests/register.mjs --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-isolation=none \"tests/*.test.ts\"",
+    "test:firestore": "node --import ./tests/integration/register.mjs --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --test-isolation=none tests/integration/firestore.test.ts"
   },
   "dependencies": {
-    "@ai-sdk/gateway": "^3.0.28",
-    "@ai-sdk/openai": "^3.0.21",
+    "@google-cloud/firestore": "9.3.1",
     "@slack/web-api": "^7.13.0",
-    "@upstash/redis": "^1.36.1",
-    "@vercel/functions": "^3.4.1",
-    "ai": "^6.0.58",
+    "google-auth-library": "11.1.0",
     "next": "16.3.8",
     "react": "19.2.3",
     "react-dom": "19.2.3"

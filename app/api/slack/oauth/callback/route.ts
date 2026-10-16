@@ -1,58 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { waitUntil } from "@vercel/functions";
-import { getUser, saveUser, updateUser, type NudgeUser } from "@/lib/db";
+import { getUser, saveUser } from "@/lib/db";
 import { createSlackClient, getUserTimezone } from "@/lib/slack";
-import { pollUser, type PollStats } from "@/lib/poll";
 import { postDM } from "@/lib/tick";
 import { currentSlot } from "@/lib/schedule";
-import { firstCheckFailedBlocks, welcomeBlocks } from "@/lib/digest";
-import { sendFirstReport } from "@/lib/first-report";
-import { publishHome } from "@/lib/home";
+import { welcomeBlocks } from "@/lib/digest";
+import { APP_URL } from "@/lib/messages";
+import { slackClientId, slackClientSecret } from "@/lib/gcp";
+import { enqueue } from "@/lib/tasks";
 
-// The first poll (7 days of history) and the DM with its result run in waitUntil
-export const maxDuration = 300;
-
-async function onboard(user: NudgeUser, isNew: boolean, appId?: string) {
-  if (isNew) {
-    try {
-      await postDM(user, welcomeBlocks(), "Nudge가 연결됐어요! 지난 7일 치 놓친 질문을 찾아 몇 분 안에 알려드릴게요");
-    } catch (err) {
-      console.error("welcome DM failed:", err);
-    }
-  }
-  // Re-read so the poll and the 홈 tab know the Nudge DM channel recorded above
-  const fresh = (await getUser(user.slackUserId)) ?? user;
-  try {
-    await publishHome(fresh, appId);
-  } catch (err) {
-    console.error("home tab publish failed:", err);
-  }
-  let stats: PollStats;
-  try {
-    // Leaves time inside maxDuration for the result DM below
-    stats = await pollUser(fresh, Date.now() + 200_000);
-    console.log("first poll", user.slackUserId, JSON.stringify({ ...stats, errors: stats.errors.length }));
-  } catch (err) {
-    console.error("first poll failed:", err);
-    // The welcome DM promised a result: say it didn't work out rather than going quiet
-    if (isNew) await postDM(fresh, firstCheckFailedBlocks(), "Nudge: 첫 확인 중 문제가 생겼어요").catch(() => {});
-    return;
-  }
-  if (!isNew) return; // reinstalls keep their usual digests
-  if (stats.skipped) {
-    // "poll already running": 🔄 is already showing the list
-    await updateUser(user.slackUserId, { firstReportAt: Date.now() }).catch(() => {});
-    return;
-  }
-  try {
-    await sendFirstReport((await getUser(user.slackUserId)) ?? fresh, stats);
-  } catch (err) {
-    console.error("first report DM failed:", err);
-  }
-}
-
+// Stores the tokens, sends the welcome DM, and queues the first check (7 days of history) and
+// the DM with its result (lib/slack-handlers.ts onboard)
 export async function GET(req: NextRequest) {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const appUrl = APP_URL;
   const code = req.nextUrl.searchParams.get("code");
   const error = req.nextUrl.searchParams.get("error");
 
@@ -72,8 +31,8 @@ export async function GET(req: NextRequest) {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams({
-        client_id: process.env.SLACK_CLIENT_ID!,
-        client_secret: process.env.SLACK_CLIENT_SECRET!,
+        client_id: (await slackClientId()) ?? "",
+        client_secret: (await slackClientSecret()) ?? "",
         code,
         redirect_uri: `${appUrl}/api/slack/oauth/callback`,
       }),
@@ -107,7 +66,14 @@ export async function GET(req: NextRequest) {
         : {}),
     });
 
-    waitUntil(onboard(user, !existing, data.app_id));
+    if (!existing) {
+      try {
+        await postDM(user, welcomeBlocks(), "Nudge가 연결됐어요! 지난 7일 치 놓친 질문을 찾아 몇 분 안에 알려드릴게요");
+      } catch (err) {
+        console.error("welcome DM failed:", err);
+      }
+    }
+    await enqueue({ type: "onboard", userId: slackUserId, isNew: !existing, appId: data.app_id }, { name: `onboard-${slackUserId}-${Date.now()}` });
 
     const installed = existing ? "updated" : "new";
     return NextResponse.redirect(`${appUrl}?installed=${installed}&team=${encodeURIComponent(data.team.id)}`);

@@ -70,7 +70,7 @@ export const WELCOME_NOTE =
   "그 뒤로는 확인할 질문이 있을 때 평일 오전 8시에 알려드려요 · 궁금한 건 `도움말`";
 
 // Public site: the landing page, and where people connect Nudge the first time (Add to Slack)
-export const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://clio-nudge.vercel.app";
+export const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://nudge-233887047351.asia-northeast3.run.app";
 export const CONNECT_URL = `${APP_URL}/api/slack/oauth`;
 const APP_HOST = APP_URL.replace(/^https?:\/\//, "");
 

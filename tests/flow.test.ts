@@ -3,12 +3,12 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { resetSlack, workspace, type FakeMessage } from "./mocks/slack-web-api.ts";
-import { resetRedis } from "./mocks/redis.ts";
+import { resetMemoryStore } from "../lib/store/backend.ts";
 import { aiCalls, aiFailures, aiVerdicts, modelsUsed, temperatures } from "./mocks/ai.ts";
 import { classifyResponse, classifyUserMessage, resumeAi } from "../lib/ai.ts";
 import { dmResponder, parseDmText, runCommand } from "../lib/nudge-command.ts";
 import { firstReport } from "../lib/first-report.ts";
-import { buildExport, isExportLocked, isFrozen, setMigrationState } from "../lib/migration.ts";
+import { applyExport } from "../lib/migration.ts";
 import { dismissGroup } from "../lib/dismiss.ts";
 import { DM_PREFIX, SLASH_PREFIX } from "../lib/messages.ts";
 import { JUDGE_VERSION, pollUser } from "../lib/poll.ts";
@@ -16,7 +16,7 @@ import { handleAppHomeOpened } from "../lib/home.ts";
 import { CONNECT_URL } from "../lib/messages.ts";
 import { runTick } from "../lib/tick.ts";
 import { getUser, saveUser, updateUser, type NudgeUser } from "../lib/db.ts";
-import { addFollowUp, getSeen, getUserFollowUps, itemId, markSeen, redis, removeFollowUp } from "../lib/redis.ts";
+import { acquireLock, addFollowUp, firstTime, getSeen, getSeenEntries, getUserFollowUps, itemId, markSeen, releaseLock, removeFollowUp } from "../lib/store.ts";
 import { buildDigestBlocks, loadVisible, PROMISED_LABEL, QUICK_ACTIONS, visibleIds, welcomeBlocks } from "../lib/digest.ts";
 import { currentSlot, localParts } from "../lib/schedule.ts";
 
@@ -112,7 +112,7 @@ async function install(extra: Partial<NudgeUser> = {}): Promise<NudgeUser> {
 
 beforeEach(() => {
   resetSlack();
-  resetRedis();
+  resetMemoryStore();
   aiCalls.length = 0;
   aiFailures.rateLimited = 0;
   aiFailures.delayAborted = 0;
@@ -212,7 +212,7 @@ test("tick sends one digest per slot, records the Nudge DM and never tracks it",
   await install({ schedule: { kind: "times", hours: [hour], weekdaysOnly: false } });
 
   const first = await runTick("test");
-  assert.equal(first.usersNotified, 1);
+  assert.equal(first.queued.deliver, 1);
   assert.equal(workspace.posted.length, 1);
   const text = JSON.stringify(workspace.posted[0].blocks);
   assert.match(text, /📥 내가 답장해야 할 질문 · 4/);
@@ -292,16 +292,26 @@ test("a search hit whose message is gone doesn't stall later polls", async () =>
   assert.ok(!stats.incomplete.some((r) => r.startsWith("with:") || r.startsWith("mentions:")), JSON.stringify(stats.incomplete));
 });
 
-test("an AI rate limit postpones work instead of failing it, and nothing is lost", async () => {
+test("a brief 429 is retried; a lasting one postpones work instead of failing it, and nothing is lost", async () => {
   const user = await install();
-  aiFailures.rateLimited = 1; // the first model call hits the provider limit
-  const first = await pollUser(user);
+  aiFailures.rateLimited = 2; // two 429s in a row: the retries get through
+  const brief = await pollUser(user);
+  assert.deepEqual(brief.errors, []);
+  assert.ok(!brief.incomplete.some((r) => r.startsWith("AI rate limit")), JSON.stringify(brief.incomplete));
+
+  resetMemoryStore(); // start over: nothing judged yet
+  await install();
+  aiCalls.length = 0;
+  aiFailures.rateLimited = 1000; // out of capacity for a while
+  const first = await pollUser((await getUser(ME))!);
   assert.deepEqual(first.errors, [], "rate limits are not reported as errors");
   assert.ok(first.incomplete.some((r) => r.startsWith("AI rate limit")), JSON.stringify(first.incomplete));
-  const callsWhilePaused = aiCalls.length;
-  assert.ok(callsWhilePaused <= 1, "no more model calls while paused");
+  assert.equal(aiCalls.length, 0, "no answers while out of capacity");
+  const tried = 1000 - aiFailures.rateLimited;
+  assert.ok(tried <= 4 * 4, `only the calls already running retry, then the AI pauses (${tried})`);
 
   // Pause over → the next poll picks everything up
+  aiFailures.rateLimited = 0;
   resumeAi();
   await pollUser((await getUser(ME))!);
   const incoming = ids(await getUserFollowUps(ME, "incoming"));
@@ -310,9 +320,9 @@ test("an AI rate limit postpones work instead of failing it, and nothing is lost
   assert.equal((await getUserFollowUps(ME, "outgoing")).length, 2);
 });
 
-test("a 429 retry wait cut short by the AI timeout pauses the AI like a rate limit, not as errors", async () => {
+test("model calls that keep timing out pause the AI like a rate limit, not as errors", async () => {
   const user = await install();
-  aiFailures.delayAborted = 1; // production: "AbortError: Delay was aborted"
+  aiFailures.delayAborted = 1000; // every call runs past AI_TIMEOUT_MS
   const first = await pollUser(user);
   assert.deepEqual(first.errors, []);
   assert.ok(first.incomplete.some((r) => r.startsWith("AI rate limit")), JSON.stringify(first.incomplete));
@@ -532,7 +542,7 @@ test("commands typed in the Nudge DM work without /nudge, and replies show them 
 test("🔄 on a digest keeps the list on screen when a check is already running", async () => {
   const user = await install({ botDmChannel: "DNUDGE" });
   await pollUser(user);
-  await redis.set(`nudge:lock:poll:${ME}`, 1, { nx: true, ex: 300 }); // another poll in progress
+  await acquireLock(`nudge:lock:poll:${ME}`, 300); // another poll in progress
   const shown: { text?: string; blocks?: unknown[] }[] = [];
   const inPlace = {
     prefix: DM_PREFIX,
@@ -629,14 +639,14 @@ test("🔄 that couldn't read some messages says so instead of 모두 처리했�
   assert.doesNotMatch(retried, /오류/);
 });
 
-test("a paid-only model on the free plan falls back to the free model instead of failing", async () => {
+test("an unreachable model falls back to the other Gemini model instead of failing", async () => {
   const user = await install();
-  aiFailures.paidOnly.add("anthropic/claude-haiku-4.5"); // the configured default in tests
+  aiFailures.paidOnly.add("gemini-3.8-flash"); // the configured default
   const stats = await pollUser(user);
   assert.deepEqual(stats.errors, []);
-  assert.ok(modelsUsed.includes("google/gemini-2.5-flash-lite"), "switched to the fallback model");
+  assert.ok(modelsUsed.includes("gemini-2.5-flash"), "switched to the fallback model");
   // Calls run 4 at a time, so at most the first parallel batch hits the blocked model
-  assert.ok(modelsUsed.filter((m) => m === "anthropic/claude-haiku-4.5").length <= 4, "the blocked model isn't retried");
+  assert.ok(modelsUsed.filter((m) => m === "gemini-3.8-flash").length <= 4, "the blocked model isn't retried");
   assert.equal((await getUserFollowUps(ME, "incoming")).length, 5, "detection still works");
 });
 
@@ -726,7 +736,7 @@ test("the tick sends the first check's result to new users who never got it, onc
   // Connected before the result DM existed: welcome only, still waiting
   await install({ installedAt: Date.now() - HOUR * 1000, firstScanPending: true, lastSlot: currentSlot(Date.now()) });
   const first = await runTick("catch-up");
-  assert.equal(first.firstReports, 1);
+  assert.equal(first.queued.firstReport, 1);
   assert.equal(workspace.posted.length, 1);
   assert.match(JSON.stringify(workspace.posted[0].blocks), /지난 7일 치 Slack/);
   assert.ok((await getUser(ME))!.firstReportAt);
@@ -737,9 +747,9 @@ test("the tick sends the first check's result to new users who never got it, onc
 
 test("the tick leaves the first result to the callback right after connecting, and skips old installs", async () => {
   await install({ installedAt: Date.now() - 2 * 60 * 1000, lastSlot: currentSlot(Date.now()) });
-  assert.equal((await runTick("just-connected")).firstReports, 0);
+  assert.equal((await runTick("just-connected")).queued.firstReport, 0);
   await updateUser(ME, { installedAt: Date.now() - 3 * 24 * HOUR * 1000 });
-  assert.equal((await runTick("long-ago")).firstReports, 0);
+  assert.equal((await runTick("long-ago")).queued.firstReport, 0);
   assert.equal(workspace.posted.length, 0);
 });
 
@@ -804,8 +814,9 @@ test("hourly mode only re-sends when something new shows up", async () => {
   // A new question arrives (3h old so it's past the grace period). Re-running the same hour
   // needs the per-slot lock cleared; in production the next tick is a new slot.
   msg({ channel: "DC", user: "UC", text: "회의실 예약하셨나요?", hoursAgo: 3 });
-  await updateUser(ME, { lastSlot: prevSlot, lastDigestIds: visible, lastSentDate });
-  await redis.del(`nudge:lock:digest:${ME}:${currentSlot(Date.now())}`);
+  // …and the stored data is older than a pre-poll would leave it, so this digest polls first
+  await updateUser(ME, { lastSlot: prevSlot, lastDigestIds: visible, lastSentDate, lastPolledAt: Date.now() - 2 * HOUR * 1000 });
+  await releaseLock(`nudge:lock:digest:${ME}:${currentSlot(Date.now())}`);
   await runTick("hourly-2");
   assert.equal(workspace.posted.length, sameDay ? 1 : 2, "new item → digest");
 });
@@ -872,8 +883,9 @@ test("promises made to someone else, thanks, and unclear ones the AI turns down 
   msg({ channel: "DR", user: ME, text: "계약서 초안 첨부했습니다", hoursAgo: 30 });
   const loose = msg({ channel: "DR", user: "UE", text: "내일까지 드리겠습니다", hoursAgo: 29.9 });
 
-  aiFailures.rateLimited = 1; // the first AI check hits the limit: postponed, not dropped
+  aiFailures.rateLimited = 1000; // the AI stays out of capacity: postponed, not dropped
   await pollUser(user);
+  aiFailures.rateLimited = 0;
   resumeAi();
   await pollUser((await getUser(ME))!);
 
@@ -886,28 +898,39 @@ test("promises made to someone else, thanks, and unclear ones the AI turns down 
   assert.ok((await getSeen(ME)).has(itemId("outgoing", "DQ", thirdParty)));
 });
 
-test("the GCP move exports every user, question, seen id and one-time flag, and freezing is reversible", async () => {
-  const user = await install({ botDmChannel: "DNUDGE" });
-  await pollUser(user);
-  await markSeen(ME, "incoming:DX:1700000000.000100", 1700000000000);
-  await redis.set(`nudge:onboarded:U_NEW`, 1, { nx: true });
+test("the GCP import writes users, questions, seen ids and one-time flags, and a re-run follows Vercel", async () => {
+  const base = { slackTeamId: "T1", botToken: "xoxb-test", userToken: "xoxp-test", installedAt: 1, tz: "Asia/Seoul" };
+  const q = (threadTs: string) => ({
+    kind: "incoming" as const,
+    userId: ME,
+    channel: "DA",
+    threadTs,
+    originalMessage: "견적서 언제 받을 수 있을까요?",
+    createdAt: 1_790_000_000_000,
+    lastRemindedAt: null,
+    lastActivityAt: 0,
+  });
+  const data = {
+    version: 1 as const,
+    exportedAt: 1,
+    users: [{ slackUserId: ME, ...base, schedule: { kind: "times" as const, hours: [9], weekdaysOnly: true } }],
+    // A record from before incoming tracking had no kind: outgoing
+    followups: [q("1790000000.000100"), { ...q("1790000000.000200"), kind: undefined, channel: "DB" }],
+    seen: { [ME]: { "incoming:DX:1700000000.000100": 1_700_000_000_000 } },
+    flags: ["nudge:onboarded:U_NEW"],
+    slack: {},
+  };
+  const counts = await applyExport(data);
+  assert.equal(counts.users, 1);
+  assert.equal(counts.followups, 2);
+  assert.equal((await getUser(ME))!.schedule?.kind, "times");
+  assert.equal((await getUserFollowUps(ME, "incoming")).length, 1);
+  assert.equal((await getUserFollowUps(ME, "outgoing"))[0].channel, "DB");
+  assert.equal((await getSeenEntries(ME))["incoming:DX:1700000000.000100"], 1_700_000_000_000);
+  assert.equal(await firstTime("nudge:onboarded:U_NEW"), false, "the greeting isn't sent again");
 
-  const data = await buildExport();
-  assert.equal(data.users.length, 1);
-  assert.equal(data.users[0].slackUserId, ME);
-  const tracked = (await getUserFollowUps(ME, "incoming")).length + (await getUserFollowUps(ME, "outgoing")).length;
-  assert.ok(tracked > 0);
-  assert.equal(data.followups.length, tracked);
-  assert.ok(data.followups.every((f) => f.kind === "incoming" || f.kind === "outgoing"));
-  assert.equal(data.seen[ME]["incoming:DX:1700000000.000100"], 1700000000000, "seen ids keep their message time");
-  assert.deepEqual(data.flags, ["nudge:onboarded:U_NEW"]);
-
-  assert.equal(await isFrozen(), false);
-  await setMigrationState("freeze");
-  await setMigrationState("lock");
-  assert.equal(await isFrozen(), true);
-  assert.equal(await isExportLocked(), true);
-  await setMigrationState("unfreeze"); // rollback
-  assert.equal(await isFrozen(), false);
-  assert.equal(await isExportLocked(), false);
+  // Answered on Vercel before the cutover: gone here too after a second run
+  const again = await applyExport({ ...data, followups: [data.followups[1]] });
+  assert.equal(again.removedFollowups, 1);
+  assert.equal((await getUserFollowUps(ME, "incoming")).length, 0);
 });

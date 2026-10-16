@@ -1,17 +1,22 @@
-import { waitUntil } from "@vercel/functions";
 import { getAllUsers, getUser, updateUser, type NudgeUser } from "@/lib/db";
 import { pollUser, type PollStats } from "@/lib/poll";
-import { acquireLock, recentTickHours, recordTick, redis } from "@/lib/redis";
-import { currentSlot, findDueSlot, resolveSchedule, resolveTimezone } from "@/lib/schedule";
+import { acquireLock, hasMarker, recentTickHours, recordTick, setMarker } from "@/lib/store";
+import { currentSlot, findDueSlot, nextSlotTime, resolveSchedule, resolveTimezone } from "@/lib/schedule";
 import { buildDigestBlocks, digestFallbackText, loadVisible, visibleIds } from "@/lib/digest";
 import { createBoundedClient, getTeamUrl } from "@/lib/slack";
-import { firstReportOverdue, sendFirstReport } from "@/lib/first-report";
+import { firstReportOverdue } from "@/lib/first-report";
+import { enqueue } from "@/lib/tasks";
+import { recordRun } from "@/lib/runs";
 
-const USER_CONCURRENCY = 2;
-const MAX_POLL_MS_PER_USER = 90_000;
-const BACKGROUND_POLL_MS = 60_000;
+const DELIVER_POLL_MS = 120_000;
+const BACKGROUND_POLL_MS = 300_000;
 const STALE_AFTER_MS = 2 * 60 * 60 * 1000; // users not due get re-polled when data is older than this
-// Hourly trigger counts as healthy when ticks landed in most of the recent hours
+// Digests send from stored data when a poll this recent exists: the pre-poll, queued 20 minutes
+// before the hour for anyone whose data is older than 15 minutes
+const FRESH_ENOUGH_MS = 30 * 60 * 1000;
+const PREPOLL_WITHIN_MS = 20 * 60 * 1000;
+const PREPOLL_IF_OLDER_MS = 15 * 60 * 1000;
+// The scheduler counts as healthy when ticks landed in most of the recent hours
 const HOURLY_PROBE_HOURS = 6;
 const HOURLY_MIN_TICKS = 3;
 
@@ -62,14 +67,13 @@ interface UserResult {
   error?: string;
 }
 
-// Poll, but give up waiting at `untilMs`. The poll keeps running in the background, and
-// waitUntil keeps the function alive until it saves its progress.
+// Poll, but give up waiting at `untilMs`. The poll keeps running and saves its progress; the
+// digest doesn't wait for it.
 async function pollWithin(user: NudgeUser, untilMs: number): Promise<Pick<UserResult, "poll" | "pollTimedOut">> {
   const poll = pollUser(user, untilMs - 10_000).catch((err) => {
     console.error(`poll failed for ${user.slackUserId}:`, err);
     return undefined;
   });
-  waitUntil(poll);
   const stats = await settleBy(poll, untilMs);
   if (!stats) return { pollTimedOut: true };
   const { errors, ...rest } = stats;
@@ -86,30 +90,30 @@ function dueSlotFor(user: NudgeUser, nowMs: number) {
   };
 }
 
-async function deliver(user: NudgeUser, nowMs: number, deadline: number): Promise<UserResult> {
+export async function deliver(user: NudgeUser, nowMs: number, deadline: number): Promise<UserResult> {
   const { schedule, due } = dueSlotFor(user, nowMs);
   if (!due) return { userId: user.slackUserId, skipped: "not due" };
 
-  // Vercel Cron and GitHub Actions can both fire in the same hour — first one wins.
-  // Short TTL so a crashed run doesn't block the retry from the next tick.
+  // Two ticks (or a retried task) for the same slot — first one wins.
+  // Short TTL so a crashed run doesn't block the retry.
   if (!(await acquireLock(`nudge:lock:digest:${user.slackUserId}:${due.slot}`, 600))) {
     return { userId: user.slackUserId, slot: due.slot, skipped: "handled by another tick" };
   }
 
-  // Fresh data right before the digest — but the digest goes out on time even if the
-  // poll is stuck (rate limits, slow AI).
-  const pollUntil = Math.min(deadline - 30_000, Date.now() + MAX_POLL_MS_PER_USER);
+  // Polled shortly before (the pre-poll): send from that. Otherwise fresh data first — but the
+  // digest goes out on time even if the poll is stuck (rate limits, slow AI).
+  const recentlyPolled = Date.now() - (user.lastPolledAt ?? 0) < FRESH_ENOUGH_MS;
+  const pollUntil = Math.min(deadline - 30_000, Date.now() + DELIVER_POLL_MS);
   const result: UserResult = {
     userId: user.slackUserId,
     slot: due.slot,
-    ...(Date.now() < pollUntil ? await pollWithin(user, pollUntil) : {}),
+    ...(!recentlyPolled && Date.now() < pollUntil ? await pollWithin(user, pollUntil) : {}),
   };
 
   const fresh = (await getUser(user.slackUserId)) ?? user;
-  // Already delivered by an overlapping tick (also guards against lastSlot being rolled back
-  // by a concurrent read-modify-write of the user record)
+  // Already delivered (also guards against lastSlot being rolled back by a concurrent write)
   const sentKey = `nudge:sent:${user.slackUserId}:${due.slot}`;
-  if ((fresh.lastSlot !== undefined && fresh.lastSlot >= due.slot) || (await redis.exists(sentKey)) === 1) {
+  if ((fresh.lastSlot !== undefined && fresh.lastSlot >= due.slot) || (await hasMarker(sentKey))) {
     return { ...result, skipped: "already handled" };
   }
 
@@ -125,7 +129,7 @@ async function deliver(user: NudgeUser, nowMs: number, deadline: number): Promis
   if (send) {
     const teamUrl = await teamUrlFor(fresh);
     await postDM(fresh, buildDigestBlocks(visible, teamUrl, { maxPerSection: 10 }), digestFallbackText(visible));
-    await redis.set(sentKey, Date.now(), { ex: 4 * 60 * 60 });
+    await setMarker(sentKey, 4 * 60 * 60);
     result.sent = ids.length;
   } else {
     result.skipped = ids.length === 0 ? "nothing pending" : "no new items since last digest";
@@ -138,73 +142,75 @@ async function deliver(user: NudgeUser, nowMs: number, deadline: number): Promis
   return result;
 }
 
-// Runs `fn` over `items` with a few workers, stopping new work once `stopAt` passes
-async function each<T>(items: T[], stopAt: number, fn: (item: T) => Promise<void>): Promise<T[]> {
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(USER_CONCURRENCY, items.length) }, async () => {
-      while (next < items.length && Date.now() < stopAt) await fn(items[next++]);
-    })
-  );
-  return items.slice(next);
+export async function deliverJob(userId: string): Promise<UserResult | null> {
+  const user = await getUser(userId);
+  if (!user) return null;
+  const now = Date.now();
+  const result = await deliver(user, now, now + 10 * 60_000);
+  await recordRun("deliver", { ...result }, userId);
+  return result;
 }
 
-export async function runTick(source: string, nowMs = Date.now(), deadline = nowMs + 240_000) {
+// Background poll: fresh data ahead of a digest, or when it got old
+export async function pollJob(userId: string): Promise<UserResult | null> {
+  const user = await getUser(userId);
+  if (!user) return null;
+  return { userId, ...(await pollWithin(user, Date.now() + BACKGROUND_POLL_MS)) };
+}
+
+// Every 5 minutes (Cloud Scheduler): decide what needs doing and queue it. Task names keep each
+// piece of work to once per user and slot, however many ticks see it.
+export async function runTick(source: string, nowMs = Date.now()) {
   const slot = currentSlot(nowMs);
   await recordTick(slot, source);
 
-  // Stalest data first, so a deadline cut-off doesn't starve the same users every time
-  const users = (await getAllUsers()).sort((a, b) => (a.lastPolledAt ?? 0) - (b.lastPolledAt ?? 0));
-  const due = users.filter((u) => dueSlotFor(u, nowMs).due);
-  const results: UserResult[] = [];
-
-  // 1) Digests for everyone due this hour
-  const leftDue = await each(due, deadline - 15_000, async (user) => {
+  const users = await getAllUsers();
+  const queued = { deliver: 0, prepoll: 0, stale: 0, firstReport: 0 };
+  const errors: string[] = [];
+  const queue = async (what: keyof typeof queued, run: () => Promise<boolean>) => {
     try {
-      results.push(await deliver(user, nowMs, deadline));
+      if (await run()) queued[what]++;
     } catch (err) {
-      console.error(`tick failed for ${user.slackUserId}:`, err);
-      results.push({ userId: user.slackUserId, error: String(err) });
+      errors.push(`${what}: ${String(err).slice(0, 200)}`);
     }
-  });
-  // Not marked as handled — the next tick (within the catch-up window) picks them up
-  leftDue.forEach((u) => results.push({ userId: u.slackUserId, skipped: "out of time" }));
+  };
 
-  // 2) New users the OAuth callback didn't send the first check's result to: one more poll,
-  //    then that DM
-  const firstReports: string[] = [];
-  await each(users.filter((u) => firstReportOverdue(u)), deadline - 40_000, async (user) => {
-    try {
-      await pollWithin(user, Math.min(deadline - 20_000, Date.now() + BACKGROUND_POLL_MS));
-      if (await sendFirstReport((await getUser(user.slackUserId)) ?? user)) firstReports.push(user.slackUserId);
-    } catch (err) {
-      console.error(`first report failed for ${user.slackUserId}:`, err);
+  for (const user of users) {
+    const userId = user.slackUserId;
+    const { schedule, paused, due } = dueSlotFor(user, nowMs);
+    const age = nowMs - (user.lastPolledAt ?? 0);
+
+    if (due) {
+      await queue("deliver", () => enqueue({ type: "deliver", userId }, { name: `deliver-${userId}-${due.slot}` }));
+      continue;
     }
-  });
-
-  // 3) Spare time: refresh users whose data is getting old, so their next digest and
-  //    /nudge list are current even though only due users are polled before sending
-  const stale = users.filter(
-    (u) => !due.includes(u) && !firstReports.includes(u.slackUserId) && !resolveSchedule(u).paused && Date.now() - (u.lastPolledAt ?? 0) > STALE_AFTER_MS
-  );
-  const backgroundPolled: string[] = [];
-  await each(stale, deadline - 40_000, async (user) => {
-    await pollWithin(user, Math.min(deadline - 20_000, Date.now() + BACKGROUND_POLL_MS));
-    backgroundPolled.push(user.slackUserId);
-  });
+    if (firstReportOverdue(user, nowMs)) {
+      await queue("firstReport", () => enqueue({ type: "first-report", userId }, { name: `first-report-${userId}` }));
+      continue;
+    }
+    if (paused) continue;
+    // Fresh data for the next digest, so it can go out right on the hour
+    const next = nextSlotTime(schedule, resolveTimezone(user), nowMs);
+    if (next !== null && next - nowMs <= PREPOLL_WITHIN_MS && age > PREPOLL_IF_OLDER_MS) {
+      await queue("prepoll", () => enqueue({ type: "poll", userId }, { name: `prepoll-${userId}-${currentSlot(next)}` }));
+      continue;
+    }
+    // Keeps 목록 and the 홈 tab current between digests
+    if (age > STALE_AFTER_MS) {
+      await queue("stale", () => enqueue({ type: "poll", userId }, { name: `poll-${userId}-${slot}` }));
+    }
+  }
 
   const summary = {
-    ok: true,
+    ok: errors.length === 0,
     source,
     ranAt: new Date(nowMs).toISOString(),
     slot,
     usersTotal: users.length,
-    usersDue: due.length,
-    usersNotified: results.filter((r) => (r.sent ?? 0) > 0).length,
-    backgroundPolled: backgroundPolled.length,
-    firstReports: firstReports.length,
-    results,
+    queued,
+    errors,
   };
   console.log("tick", JSON.stringify(summary));
+  await recordRun("tick", summary);
   return summary;
 }

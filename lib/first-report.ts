@@ -3,7 +3,7 @@
 // get one (installs from before this DM existed, or a callback that died).
 import { updateUser, type NudgeUser } from "@/lib/db";
 import type { PollStats } from "@/lib/poll";
-import { acquireLock, releaseLock } from "@/lib/redis";
+import { acquireLock, releaseLock } from "@/lib/store";
 import { formatSchedule, resolveSchedule } from "@/lib/schedule";
 import { buildDigestBlocks, countGroups, loadVisible } from "@/lib/digest";
 import { postDM, teamUrlFor } from "@/lib/tick";

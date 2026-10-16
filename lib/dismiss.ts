@@ -1,5 +1,5 @@
 // 완료 on a digest or list row: forget that question group, then redraw the message it sat on
-import { getFollowUp, itemId, markSeen, removeFollowUp, type FollowUpKind } from "@/lib/redis";
+import { getFollowUp, itemId, markSeen, removeFollowUp, type FollowUpKind } from "@/lib/store";
 import type { NudgeUser } from "@/lib/db";
 import { buildDigestBlocks, digestFallbackText, loadVisible } from "@/lib/digest";
 import { teamUrlFor } from "@/lib/tick";
