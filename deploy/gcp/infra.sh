@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Everything besides IAM (bootstrap.ps1) and the services (deploy.sh / scheduler.sh) that Nudge
 # needs in project clio-nudge. Created by hand on 2026-10-16; safe to re-run (existing ones are
-# left alone).   CLOUDSDK_ACTIVE_CONFIG_NAME=nudge-deployer deploy/gcp/infra.sh
+# left alone).   deploy/gcp/infra.sh
 set -uo pipefail
 P=clio-nudge
 R=asia-northeast3
-export MSYS2_ARG_CONV_EXCL="*"  # Git Bash: keep "(default)" and paths as they are
 
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
   aiplatform.googleapis.com cloudscheduler.googleapis.com cloudtasks.googleapis.com firestore.googleapis.com \

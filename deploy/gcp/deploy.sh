@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the image locally, pushes it to Artifact Registry and deploys both Cloud Run services.
-#   CLOUDSDK_ACTIVE_CONFIG_NAME=nudge-deployer deploy/gcp/deploy.sh [public|admin|all]
+#   deploy/gcp/deploy.sh [public|admin|all]   (as whoever gcloud is logged in as)
 set -euo pipefail
 # Git Bash on Windows would turn the "/projects/..." audience into a Windows path
 export MSYS2_ARG_CONV_EXCL="NUDGE_ROLE="

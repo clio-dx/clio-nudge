@@ -57,6 +57,12 @@ Vercel Hobby + Upstash Redis + Vercel AI Gateway(무료, 분당 5회) → GCP `c
 3. Slack 매니페스트 URL을 `https://clio-nudge.vercel.app/...`로 되돌리고 `vercel-state {action: "unfreeze"}`
 4. GCP에 있는 동안 새로 연결한 사람은 Vercel에 토큰이 없으니 다시 연결해야 함
 
+## 이후 운영 (10-19)
+
+- Firestore PITR 켬(7일), Vercel `CRON_SECRET` 삭제, Cloud Monitoring 메일 알림 2개(`deploy/gcp/monitoring.sh`)
+- 배포용 키와 토큰 생성 권한은 사용자가 삭제함
+- 유지: Upstash·나머지 Vercel 환경변수(롤백용), AI 기록·피드백 보존 기간(무기한), 예산 알림 없음, 도메인은 `*.run.app`
+
 ## 남는 일 (사용자)
 
 - 배포용 서비스 계정 키 삭제(이전 완료 후)

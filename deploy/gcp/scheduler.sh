@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cloud Scheduler → /api/cron/tick every 5 minutes, signed as nudge-runtime.
 # Create it only after the Vercel deployment is frozen, or both would send digests.
-#   CLOUDSDK_ACTIVE_CONFIG_NAME=nudge-deployer deploy/gcp/scheduler.sh
+#   deploy/gcp/scheduler.sh
 set -euo pipefail
 P=clio-nudge
 R=asia-northeast3

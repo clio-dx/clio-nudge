@@ -103,7 +103,7 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 
 ```bash
 # 배포 (로컬 Docker로 빌드 → Artifact Registry → Cloud Run 두 서비스)
-CLOUDSDK_ACTIVE_CONFIG_NAME=nudge-deployer deploy/gcp/deploy.sh
+deploy/gcp/deploy.sh   # gcloud 로그인 계정으로 실행
 
 # 테스트
 npm test                 # 단위·흐름 테스트 (메모리 저장소)
@@ -111,7 +111,10 @@ npm run test:firestore   # 실제 Firestore(nudge-test DB)로 저장소 동작 �
 npm run lint
 ```
 
-- 처음 한 번의 IAM 설정은 [deploy/gcp/bootstrap.ps1](deploy/gcp/bootstrap.ps1)에 있어요.
+- 처음 한 번의 IAM 설정은 [deploy/gcp/bootstrap.ps1](deploy/gcp/bootstrap.ps1), 그 밖의 리소스(Firestore·큐·시크릿·TTL)는 [deploy/gcp/infra.sh](deploy/gcp/infra.sh), 예약 실행은 [deploy/gcp/scheduler.sh](deploy/gcp/scheduler.sh)에 있어요.
+- **알림 메일**([deploy/gcp/monitoring.sh](deploy/gcp/monitoring.sh)): 예약 실행(tick)이 20분 넘게 없거나, 10분 안에 오류 로그가 3건을 넘으면 yoonchul@clio.co.kr로 메일이 가요.
+- **백업**: Firestore PITR(지난 7일 안의 어느 시점으로든 되돌리기)이 켜져 있어요.
+- 배포용 서비스 계정 키는 이전이 끝난 뒤 지웠어요. 다시 배포하려면 키를 새로 만들거나 본인 계정으로 `deploy.sh`의 gcloud 명령을 실행하세요.
 - 환경변수(배포 스크립트가 설정): `NUDGE_ROLE`(public/admin), `NUDGE_TASKS=cloud`, `NUDGE_SECRETS=gcp`, `APP_URL`·`NUDGE_SELF_URL`·`NEXT_PUBLIC_APP_URL`(공개 서비스 주소), 선택 `AI_MODEL`(기본 `gemini-3.8-flash`), `AI_FALLBACK_MODEL`(기본 `gemini-2.5-flash`), `NUDGE_IAP_AUDIENCE`.
 - 내부 엔드포인트 `/api/cron/tick`, `/api/tasks/run`은 `nudge-runtime@` 서비스 계정의 Google ID 토큰만 받아요.
 
