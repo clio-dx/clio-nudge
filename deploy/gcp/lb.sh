@@ -16,20 +16,25 @@ HOST=nudge.dx.clio.co.kr
 RUN_HOST=nudge-233887047351.asia-northeast3.run.app
 ADMIN_HOST=nudge-admin-233887047351.asia-northeast3.run.app
 
-if ! gcloud compute network-endpoint-groups describe nudge-neg --global --project $DX >/dev/null 2>&1; then
+# Each step checks its own result, so a run that stopped halfway gets finished
+gcloud compute network-endpoint-groups describe nudge-neg --global --project $DX >/dev/null 2>&1 ||
   gcloud compute network-endpoint-groups create nudge-neg --global --network-endpoint-type=internet-fqdn-port \
     --default-port=443 --project $DX
+if [[ $(gcloud compute network-endpoint-groups list-network-endpoints nudge-neg --global --project $DX \
+    --format="value(networkEndpoint.fqdn)") != *"$RUN_HOST"* ]]; then
   gcloud compute network-endpoint-groups update nudge-neg --global --add-endpoint="fqdn=$RUN_HOST,port=443" --project $DX
 fi
-if ! gcloud compute backend-services describe nudge-backend --global --project $DX >/dev/null 2>&1; then
+gcloud compute backend-services describe nudge-backend --global --project $DX >/dev/null 2>&1 ||
   gcloud compute backend-services create nudge-backend --global --load-balancing-scheme=EXTERNAL --protocol=HTTPS \
     --timeout=60s --custom-request-header="Host: $RUN_HOST" --project $DX
+if [[ $(gcloud compute backend-services describe nudge-backend --global --project $DX \
+    --format="value(backends[].group)") != *"/nudge-neg"* ]]; then
   gcloud compute backend-services add-backend nudge-backend --global --network-endpoint-group=nudge-neg \
     --global-network-endpoint-group --project $DX
 fi
 
 # The host rule goes in through export/import: add-path-matcher can't add a redirect rule
-if ! gcloud compute url-maps describe dx-lb-urlmap --global --project $DX --format="value(hostRules[].hosts)" | grep -q "$HOST"; then
+if [[ $(gcloud compute url-maps describe dx-lb-urlmap --global --project $DX --format="value(hostRules[].hosts)") != *"$HOST"* ]]; then
   map=$(mktemp)
   gcloud compute url-maps export dx-lb-urlmap --global --project $DX --destination="$map"
   python - "$map" "$HOST" "$ADMIN_HOST" <<'EOF'

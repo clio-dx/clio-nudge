@@ -78,4 +78,4 @@ DX팀 공용 LB(`clio-dx` 프로젝트의 classic Application Load Balancer, IP 
 - 비용: LB 전달 규칙을 새로 만들지 않아서 고정비는 없음. 트래픽 GB당 처리비·전송비만 붙음(Nudge 트래픽으로는 무시할 수준)
 - **admin을 LB의 IAP로 직접 여는 건 실패하고 되돌림**: LB 백엔드 서비스에 IAP를 켜고 인터넷 NEG로 `nudge-admin`에 보내 봤지만, Cloud Run이 공개 주소로 들어오는 요청의 `x-goog-iap-jwt-assertion` 헤더를 지워서(직접 보낸 위조 헤더도 앱까지 오지 않음) 앱이 로그인한 사람을 확인할 수 없음. 진짜 `nudge.dx.clio.co.kr/admin`을 하려면 `nudge-admin`을 `clio-dx`에 배포하고 서버리스 NEG + IAP(ai-store 방식)로 붙여야 함. 그때 쓰려고 `clio-dx`에 IAP를 켠 `nudge-admin-backend`(인터넷 NEG `nudge-admin-neg`, IAP 권한 team-dx@·yoonchul@)를 남겨 둠 — URL map에서는 쓰지 않음
 
-롤백: `dx-lb-urlmap`에서 `nudge.dx.clio.co.kr` 호스트 규칙과 `nudge-matcher`를 빼고, `deploy.sh`의 `URL`을 run.app으로 되돌려 다시 배포(OAuth Redirect URL은 run.app 것이 남아 있음).
+롤백: `deploy.sh`의 `URL`을 run.app으로 되돌려 다시 배포(OAuth Redirect URL은 run.app 것이 남아 있음). `nudge.dx.clio.co.kr` 호스트 규칙은 지우지 말 것 — 지우면 이 LB의 기본 백엔드(pricefcst)로 가서, 이미 보낸 DM 속 링크(연결하기·사용법 보기)가 엉뚱한 서비스를 열어요. 그대로 두거나, `nudge-matcher`를 run.app 주소로 넘기는 `defaultUrlRedirect`로 바꾸세요.
