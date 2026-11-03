@@ -86,9 +86,9 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 
 | 구성 | 하는 일 |
 | --- | --- |
-| DX 공용 LB (`clio-dx`) | [nudge.dx.clio.co.kr](https://nudge.dx.clio.co.kr) → Cloud Run `nudge`(인터넷 NEG). `/admin`은 `nudge-admin` 주소로 넘겨줘요 |
+| DX 공용 LB (`clio-dx`) | [nudge.dx.clio.co.kr](https://nudge.dx.clio.co.kr) → Cloud Run `nudge`(인터넷 NEG), `/admin` → Cloud Run `nudge-admin`(서버리스 NEG, IAP) |
 | Cloud Run `nudge` | Slack 이벤트·명령·버튼, OAuth, 예약 실행, 백그라운드 작업. Slack 요청은 서명을 확인한 뒤 바로 응답하고 실제 처리는 Cloud Tasks로 넘겨요 |
-| Cloud Run `nudge-admin` | 관리자 페이지 [nudge.dx.clio.co.kr/admin](https://nudge.dx.clio.co.kr/admin)(Cloud Run IAP 로그인, team-dx@·yoonchul@만) — 사용자 수, 실행 기록, AI 호출 통계, 로그, 피드백 내보내기 |
+| Cloud Run `nudge-admin` (`clio-dx`) | 관리자 페이지 [nudge.dx.clio.co.kr/admin](https://nudge.dx.clio.co.kr/admin)(LB의 IAP 로그인, team-dx@·yoonchul@만, LB로만 들어올 수 있어요) — 사용자 수, 실행 기록, AI 호출 통계, 로그, 피드백 내보내기 |
 | Cloud Scheduler | 5분마다 `/api/cron/tick` 호출 → 알림 시각이 된 사용자·미리 확인할 사용자를 Cloud Tasks에 넣어요 |
 | Cloud Tasks | `nudge-slack`(Slack 응답), `nudge-work`(수집·알림, 동시 2개). 작업 이름으로 사용자·시각별 한 번만 실행해요 |
 | Firestore (서울) | 사용자, 추적 중 질문, 확인 기록, 잠금, 실행 기록, AI 호출 기록, 피드백 |
@@ -104,7 +104,7 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 
 ```bash
 # 배포 (로컬 Docker로 빌드 → Artifact Registry → Cloud Run 두 서비스)
-deploy/gcp/deploy.sh   # gcloud 로그인 계정으로 실행
+deploy/gcp/deploy.sh   # gcloud 로그인 계정으로 실행 (관리자 페이지가 공개 서비스의 JS·CSS를 쓰니 두 서비스를 같이)
 
 # 테스트
 npm test                 # 단위·흐름 테스트 (메모리 저장소)

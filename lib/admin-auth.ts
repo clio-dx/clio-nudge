@@ -1,6 +1,7 @@
-// The admin pages only exist on the nudge-admin service (NUDGE_ROLE=admin), which sits behind IAP:
-// only team-dx@ and yoonchul@ get through. The page checks IAP's signed header as well, so a
-// request that somehow bypassed IAP (or a forged header) gets nothing.
+// The admin pages only exist on the nudge-admin service (NUDGE_ROLE=admin), which runs in project
+// clio-dx behind the DX load balancer (nudge.dx.clio.co.kr/admin): IAP there lets only team-dx@ and
+// yoonchul@ through, and the service takes no other traffic. The page checks IAP's signed header as
+// well, so a request that somehow bypassed IAP (or a forged header) gets nothing.
 import { OAuth2Client } from "google-auth-library";
 
 const IAP_ISSUER = "https://cloud.google.com/iap";
@@ -23,8 +24,8 @@ export interface Admin {
   email: string;
 }
 
-// The signed-in admin, or null. `audience` is pinned with NUDGE_IAP_AUDIENCE once known; until
-// then the audience seen is logged so it can be set.
+// The signed-in admin, or null. Without NUDGE_IAP_AUDIENCE nobody gets in (a token IAP signed for
+// any other app would pass otherwise); the audience seen is logged so it can be set.
 export async function verifyIapAssertion(assertion: string | null): Promise<Admin | null> {
   if (!assertion) return null;
   const audience = process.env.NUDGE_IAP_AUDIENCE || undefined;
@@ -37,7 +38,10 @@ export async function verifyIapAssertion(assertion: string | null): Promise<Admi
     }
     const payload = ticket.getPayload();
     const email = payload?.email?.toLowerCase();
-    if (!audience) console.log("IAP audience (set NUDGE_IAP_AUDIENCE):", JSON.stringify(payload?.aud));
+    if (!audience) {
+      console.error("NUDGE_IAP_AUDIENCE is not set; IAP audience seen:", JSON.stringify(payload?.aud));
+      return null;
+    }
     if (!email || !email.endsWith(`@${allowedDomain()}`)) return null;
     return { email };
   } catch (err) {

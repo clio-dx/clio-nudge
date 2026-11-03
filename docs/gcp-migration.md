@@ -69,13 +69,20 @@ DX팀 공용 LB(`clio-dx` 프로젝트의 classic Application Load Balancer, IP 
 
 | 경로 | 가는 곳 |
 |---|---|
-| `nudge.dx.clio.co.kr/*` | `nudge-backend` → 인터넷 NEG `nudge-neg` → Cloud Run `nudge` (Host 헤더를 run.app 주소로) |
-| `nudge.dx.clio.co.kr/admin`, `/admin/*` | 302로 `nudge-admin-233887047351.asia-northeast3.run.app` (지금처럼 Cloud Run IAP, team-dx@·yoonchul@만) |
+| `nudge.dx.clio.co.kr/*` | `nudge-backend` → 인터넷 NEG `nudge-neg` → Cloud Run `nudge` (`clio-nudge`, Host 헤더를 run.app 주소로) |
+| `nudge.dx.clio.co.kr/admin`, `/admin/*` (+ IAP 경로 `/_gcp_gatekeeper/*`, `/_gcp_iap/*`) | `nudge-admin-backend`(IAP: team-dx@·yoonchul@) → 서버리스 NEG `nudge-admin-neg` → Cloud Run `nudge-admin` (`clio-dx`) |
 
-- Cloud Run이 다른 프로젝트(`clio-nudge`)에 있어서 서버리스 NEG를 못 쓰고, email-tracker처럼 인터넷 NEG를 씀
+- 공개 서비스는 다른 프로젝트(`clio-nudge`)에 있어서 서버리스 NEG를 못 쓰고, email-tracker처럼 인터넷 NEG를 씀. 그래서 `nudge`의 run.app 주소는 내릴 수 없음(LB가 이 주소로 연결함)
 - 사람이 보는 주소(`APP_URL`, `NEXT_PUBLIC_APP_URL`: 랜딩, Add to Slack, DM 속 링크, OAuth Redirect URL)는 새 도메인. Slack 이벤트·버튼·`/nudge` 요청 URL, Cloud Tasks, Cloud Scheduler(`NUDGE_SELF_URL`, 토큰 audience)는 LB를 거치지 않게 run.app 그대로
 - Slack 매니페스트 Redirect URL은 새 도메인을 맨 앞에 추가하고 run.app·Vercel 것도 남김
-- 비용: LB 전달 규칙을 새로 만들지 않아서 고정비는 없음. 트래픽 GB당 처리비·전송비만 붙음(Nudge 트래픽으로는 무시할 수준)
-- **admin을 LB의 IAP로 직접 여는 건 실패하고 되돌림**: LB 백엔드 서비스에 IAP를 켜고 인터넷 NEG로 `nudge-admin`에 보내 봤지만, Cloud Run이 공개 주소로 들어오는 요청의 `x-goog-iap-jwt-assertion` 헤더를 지워서(직접 보낸 위조 헤더도 앱까지 오지 않음) 앱이 로그인한 사람을 확인할 수 없음. 진짜 `nudge.dx.clio.co.kr/admin`을 하려면 `nudge-admin`을 `clio-dx`에 배포하고 서버리스 NEG + IAP(ai-store 방식)로 붙여야 함. 그때 쓰려고 `clio-dx`에 IAP를 켠 `nudge-admin-backend`(인터넷 NEG `nudge-admin-neg`, IAP 권한 team-dx@·yoonchul@)를 남겨 둠 — URL map에서는 쓰지 않음
+- 비용: LB 전달 규칙을 새로 만들지 않아서 고정비는 없음. 트래픽 GB당 처리비·전송비만 붙음(Nudge 트래픽으로는 무시할 수준). admin 서비스는 최소 인스턴스 0이라 고정비 없음
+- **admin은 `clio-dx`에서 돎(ai-store 방식)**: 처음엔 LB 백엔드에 IAP를 켜고 인터넷 NEG로 `clio-nudge`의 `nudge-admin`에 보내 봤지만, Cloud Run이 공개 주소로 들어오는 요청의 `x-goog-iap-jwt-assertion` 헤더를 지워서(직접 보낸 위조 헤더도 앱까지 오지 않음) 앱이 로그인한 사람을 확인할 수 없었음. 서버리스 NEG는 같은 프로젝트의 Cloud Run만 가리킬 수 있어서 `nudge-admin`을 `clio-dx`로 옮김
+  - 서비스 계정 `nudge-admin-runtime@clio-dx`: `clio-nudge`에 `roles/datastore.viewer`, `roles/logging.viewer`만(조직 정책상 다른 프로젝트 서비스 계정은 못 붙임). `GOOGLE_CLOUD_PROJECT=clio-nudge`라서 Firestore·로그는 `clio-nudge` 것을 읽음
+  - 이미지는 `clio-nudge` Artifact Registry에서 받음(`clio-dx` Cloud Run 서비스 에이전트에 reader)
+  - 인그레스 `internal-and-cloud-load-balancing`, 호출은 IAP 서비스 에이전트만(`run.invoker`) — run.app 주소로는 못 들어옴
+  - 앱은 IAP 서명 헤더를 `nudge-admin-backend`의 audience로만 받고, audience가 비어 있으면 아무도 못 들어옴
+  - admin 페이지의 JS·CSS(`/_next/static`)는 공개 서비스에서 받으니 두 서비스는 항상 같은 빌드로 배포(`deploy.sh` 기본값)
+  - admin 서비스 자체 로그는 `clio-dx`에 남음 — 관리자 페이지의 로그 화면과 `clio-nudge`의 오류 알림(`nudge_errors`)에는 공개 서비스 로그만 잡힘
+  - 예전 `clio-nudge`의 `nudge-admin`(Cloud Run IAP, run.app 주소)은 삭제함
 
-롤백: `deploy.sh`의 `URL`을 run.app으로 되돌려 다시 배포(OAuth Redirect URL은 run.app 것이 남아 있음). `nudge.dx.clio.co.kr` 호스트 규칙은 지우지 말 것 — 지우면 이 LB의 기본 백엔드(pricefcst)로 가서, 이미 보낸 DM 속 링크(연결하기·사용법 보기)가 엉뚱한 서비스를 열어요. 그대로 두거나, `nudge-matcher`를 run.app 주소로 넘기는 `defaultUrlRedirect`로 바꾸세요.
+롤백: `deploy.sh`의 `URL`을 run.app으로 되돌려 다시 배포(OAuth Redirect URL은 run.app 것이 남아 있음). `nudge.dx.clio.co.kr` 호스트 규칙은 지우지 말 것 — 지우면 이 LB의 기본 백엔드(pricefcst)로 가서, 이미 보낸 DM 속 링크(연결하기·사용법 보기)가 엉뚱한 서비스를 열어요. 그대로 두거나, `nudge-matcher`를 run.app 주소로 넘기는 `defaultUrlRedirect`로 바꾸세요. admin은 LB 경로만 있으므로 호스트 규칙을 남겨 두면 그대로 쓸 수 있어요.
