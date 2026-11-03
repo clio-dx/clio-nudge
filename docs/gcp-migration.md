@@ -61,9 +61,21 @@ Vercel Hobby + Upstash Redis + Vercel AI Gateway(무료, 분당 5회) → GCP `c
 
 - Firestore PITR 켬(7일), Vercel `CRON_SECRET` 삭제, Cloud Monitoring 메일 알림 2개(`deploy/gcp/monitoring.sh`)
 - 배포용 키와 토큰 생성 권한은 사용자가 삭제함
-- 유지: Upstash·나머지 Vercel 환경변수(롤백용), AI 기록·피드백 보존 기간(무기한), 예산 알림 없음, 도메인은 `*.run.app`
+- 유지: Upstash·나머지 Vercel 환경변수(롤백용), AI 기록·피드백 보존 기간(무기한), 예산 알림 없음, 도메인은 `*.run.app`(11-03에 바뀜, 아래)
 
-## 남는 일 (사용자)
+## 도메인 nudge.dx.clio.co.kr (11-03)
 
-- 배포용 서비스 계정 키 삭제(이전 완료 후)
-- 원하면 커스텀 도메인(예: nudge.clio.co.kr) — DNS 필요
+DX팀 공용 LB(`clio-dx` 프로젝트의 classic Application Load Balancer, IP 136.68.100.213, `*.dx.clio.co.kr` 인증서)에 올림. DNS `nudge.dx` A 레코드는 사용자가 등록함. 설정은 `deploy/gcp/lb.sh`.
+
+| 경로 | 가는 곳 |
+|---|---|
+| `nudge.dx.clio.co.kr/*` | `nudge-backend` → 인터넷 NEG `nudge-neg` → Cloud Run `nudge` (Host 헤더를 run.app 주소로) |
+| `nudge.dx.clio.co.kr/admin`, `/admin/*` | 302로 `nudge-admin-233887047351.asia-northeast3.run.app` (지금처럼 Cloud Run IAP, team-dx@·yoonchul@만) |
+
+- Cloud Run이 다른 프로젝트(`clio-nudge`)에 있어서 서버리스 NEG를 못 쓰고, email-tracker처럼 인터넷 NEG를 씀
+- 사람이 보는 주소(`APP_URL`, `NEXT_PUBLIC_APP_URL`: 랜딩, Add to Slack, DM 속 링크, OAuth Redirect URL)는 새 도메인. Slack 이벤트·버튼·`/nudge` 요청 URL, Cloud Tasks, Cloud Scheduler(`NUDGE_SELF_URL`, 토큰 audience)는 LB를 거치지 않게 run.app 그대로
+- Slack 매니페스트 Redirect URL은 새 도메인을 맨 앞에 추가하고 run.app·Vercel 것도 남김
+- 비용: LB 전달 규칙을 새로 만들지 않아서 고정비는 없음. 트래픽 GB당 처리비·전송비만 붙음(Nudge 트래픽으로는 무시할 수준)
+- **admin을 LB의 IAP로 직접 여는 건 실패하고 되돌림**: LB 백엔드 서비스에 IAP를 켜고 인터넷 NEG로 `nudge-admin`에 보내 봤지만, Cloud Run이 공개 주소로 들어오는 요청의 `x-goog-iap-jwt-assertion` 헤더를 지워서(직접 보낸 위조 헤더도 앱까지 오지 않음) 앱이 로그인한 사람을 확인할 수 없음. 진짜 `nudge.dx.clio.co.kr/admin`을 하려면 `nudge-admin`을 `clio-dx`에 배포하고 서버리스 NEG + IAP(ai-store 방식)로 붙여야 함. 그때 쓰려고 `clio-dx`에 IAP를 켠 `nudge-admin-backend`(인터넷 NEG `nudge-admin-neg`, IAP 권한 team-dx@·yoonchul@)를 남겨 둠 — URL map에서는 쓰지 않음
+
+롤백: `dx-lb-urlmap`에서 `nudge.dx.clio.co.kr` 호스트 규칙과 `nudge-matcher`를 빼고, `deploy.sh`의 `URL`을 run.app으로 되돌려 다시 배포(OAuth Redirect URL은 run.app 것이 남아 있음).

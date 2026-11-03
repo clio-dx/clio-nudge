@@ -9,7 +9,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # Inlined into the landing page at build time
-ARG NEXT_PUBLIC_APP_URL=https://nudge-233887047351.asia-northeast3.run.app
+ARG NEXT_PUBLIC_APP_URL=https://nudge.dx.clio.co.kr
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

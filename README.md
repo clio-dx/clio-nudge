@@ -7,7 +7,7 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 - 📥 **내가 답장해야 할 질문** — 누가 1:1 DM, @멘션, 내가 시작한 스레드에서 나에게 물어봤는데 아직 답하지 않은 질문 (2시간이 지나면 알려줘요)
 - 📤 **상대에게 답장 받아야 할 질문** — 내가 물어봤는데 아직 답을 못 받은 질문 (24시간이 지나면 알려줘요)
 
-[![Add to Slack](https://platform.slack-edge.com/img/add_to_slack.png)](https://nudge-233887047351.asia-northeast3.run.app/api/slack/oauth)
+[![Add to Slack](https://platform.slack-edge.com/img/add_to_slack.png)](https://nudge.dx.clio.co.kr/api/slack/oauth)
 
 설치하면 안내 DM이 오고, 지난 7일 치 메시지를 바로 확인해서 몇 분 안에 찾은 질문을 DM으로 보내요. 기본값은 **평일 오전 8시에 하루 한 번**(Slack 프로필 시간대 기준)이고, 확인할 질문이 있을 때만 DM을 보내요.
 
@@ -86,8 +86,9 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 
 | 구성 | 하는 일 |
 | --- | --- |
+| DX 공용 LB (`clio-dx`) | [nudge.dx.clio.co.kr](https://nudge.dx.clio.co.kr) → Cloud Run `nudge`(인터넷 NEG). `/admin`은 `nudge-admin` 주소로 넘겨줘요 |
 | Cloud Run `nudge` | Slack 이벤트·명령·버튼, OAuth, 예약 실행, 백그라운드 작업. Slack 요청은 서명을 확인한 뒤 바로 응답하고 실제 처리는 Cloud Tasks로 넘겨요 |
-| Cloud Run `nudge-admin` | 관리자 페이지(IAP 로그인, team-dx@·yoonchul@만) — 사용자 수, 실행 기록, AI 호출 통계, 로그, 피드백 내보내기 |
+| Cloud Run `nudge-admin` | 관리자 페이지 [nudge.dx.clio.co.kr/admin](https://nudge.dx.clio.co.kr/admin)(Cloud Run IAP 로그인, team-dx@·yoonchul@만) — 사용자 수, 실행 기록, AI 호출 통계, 로그, 피드백 내보내기 |
 | Cloud Scheduler | 5분마다 `/api/cron/tick` 호출 → 알림 시각이 된 사용자·미리 확인할 사용자를 Cloud Tasks에 넣어요 |
 | Cloud Tasks | `nudge-slack`(Slack 응답), `nudge-work`(수집·알림, 동시 2개). 작업 이름으로 사용자·시각별 한 번만 실행해요 |
 | Firestore (서울) | 사용자, 추적 중 질문, 확인 기록, 잠금, 실행 기록, AI 호출 기록, 피드백 |
@@ -111,16 +112,16 @@ npm run test:firestore   # 실제 Firestore(nudge-test DB)로 저장소 동작 �
 npm run lint
 ```
 
-- 처음 한 번의 IAM 설정은 [deploy/gcp/bootstrap.ps1](deploy/gcp/bootstrap.ps1), 그 밖의 리소스(Firestore·큐·시크릿·TTL)는 [deploy/gcp/infra.sh](deploy/gcp/infra.sh), 예약 실행은 [deploy/gcp/scheduler.sh](deploy/gcp/scheduler.sh)에 있어요.
+- 처음 한 번의 IAM 설정은 [deploy/gcp/bootstrap.ps1](deploy/gcp/bootstrap.ps1), 그 밖의 리소스(Firestore·큐·시크릿·TTL)는 [deploy/gcp/infra.sh](deploy/gcp/infra.sh), 예약 실행은 [deploy/gcp/scheduler.sh](deploy/gcp/scheduler.sh), 도메인(DX 공용 LB)은 [deploy/gcp/lb.sh](deploy/gcp/lb.sh)에 있어요.
 - **알림 메일**([deploy/gcp/monitoring.sh](deploy/gcp/monitoring.sh)): 예약 실행(tick)이 20분 넘게 없거나, 10분 안에 오류 로그가 3건을 넘으면 yoonchul@clio.co.kr로 메일이 가요.
 - **백업**: Firestore PITR(지난 7일 안의 어느 시점으로든 되돌리기)이 켜져 있어요.
 - 배포용 서비스 계정 키는 이전이 끝난 뒤 지웠어요. 다시 배포하려면 키를 새로 만들거나 본인 계정으로 `deploy.sh`의 gcloud 명령을 실행하세요.
-- 환경변수(배포 스크립트가 설정): `NUDGE_ROLE`(public/admin), `NUDGE_TASKS=cloud`, `NUDGE_SECRETS=gcp`, `APP_URL`·`NUDGE_SELF_URL`·`NEXT_PUBLIC_APP_URL`(공개 서비스 주소), 선택 `AI_MODEL`(기본 `gemini-3.8-flash`), `AI_FALLBACK_MODEL`(기본 `gemini-2.5-flash`), `NUDGE_IAP_AUDIENCE`.
+- 환경변수(배포 스크립트가 설정): `NUDGE_ROLE`(public/admin), `NUDGE_TASKS=cloud`, `NUDGE_SECRETS=gcp`, `APP_URL`·`NEXT_PUBLIC_APP_URL`(사람이 보는 주소 `https://nudge.dx.clio.co.kr`), `NUDGE_SELF_URL`(Cloud Run 주소 — Cloud Tasks·Scheduler가 직접 호출), 선택 `AI_MODEL`(기본 `gemini-3.8-flash`), `AI_FALLBACK_MODEL`(기본 `gemini-2.5-flash`), `NUDGE_IAP_AUDIENCE`.
 - 내부 엔드포인트 `/api/cron/tick`, `/api/tasks/run`은 `nudge-runtime@` 서비스 계정의 Google ID 토큰만 받아요.
 
 ### Slack 앱
 
-[`slack-app-manifest.json`](slack-app-manifest.json)을 Slack 앱 설정의 **App Manifest**에 붙여 넣고 Save하세요(스코프가 그대로면 다시 설치할 필요 없어요). 스코프를 바꾸면 사용자가 한 번 다시 설치(Add to Slack)해야 해요.
+[`slack-app-manifest.json`](slack-app-manifest.json)을 Slack 앱 설정의 **App Manifest**에 붙여 넣고 Save하세요(스코프가 그대로면 다시 설치할 필요 없어요). 스코프를 바꾸면 사용자가 한 번 다시 설치(Add to Slack)해야 해요. 연결(OAuth)은 `nudge.dx.clio.co.kr`로 받고, 이벤트·버튼·`/nudge` 요청 URL은 LB를 거치지 않게 Cloud Run 주소 그대로 둬요.
 
 - User scopes: `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `search:read`, `users:read`
 - Bot scopes: `chat:write`, `im:write`, `im:history`, `commands`
@@ -133,5 +134,5 @@ npm run lint
 ## 기술 스택
 
 - [Next.js](https://nextjs.org) App Router (standalone, Cloud Run)
-- Google Cloud: Cloud Run, Firestore, Cloud Tasks, Cloud Scheduler, Vertex AI(Gemini), Secret Manager, IAP
+- Google Cloud: Cloud Run, Cloud Load Balancing, Firestore, Cloud Tasks, Cloud Scheduler, Vertex AI(Gemini), Secret Manager, IAP
 - [Slack Web API](https://api.slack.com)
