@@ -18,7 +18,7 @@
     "slash_commands": [
       {
         "command": "/nudge",
-        "url": "https://nudge-233887047351.asia-northeast3.run.app/api/slack/commands",
+        "url": "https://nudge.dx.clio.co.kr/api/slack/commands",
         "description": "놓친 질문 확인 · 알림 시간 설정",
         "usage_hint": "설정 | 목록 | 새로고침 | 9시 | 매시간 | 2시간마다 | 끄기 | 도움말",
         "should_escape": false
@@ -62,7 +62,7 @@
   },
   "settings": {
     "event_subscriptions": {
-      "request_url": "https://nudge-233887047351.asia-northeast3.run.app/api/slack/events",
+      "request_url": "https://nudge.dx.clio.co.kr/api/slack/events",
       "bot_events": [
         "app_home_opened",
         "message.im"
@@ -70,7 +70,7 @@
     },
     "interactivity": {
       "is_enabled": true,
-      "request_url": "https://nudge-233887047351.asia-northeast3.run.app/api/slack/interactions"
+      "request_url": "https://nudge.dx.clio.co.kr/api/slack/interactions"
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,

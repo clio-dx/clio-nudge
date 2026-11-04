@@ -1,11 +1,13 @@
-// GCP plumbing shared by the store, background tasks, AI and admin pages. On Cloud Run every call
-// runs as the service's account (metadata server): nudge-runtime, or for the admin pages
-// nudge-admin-runtime@clio-dx, which may only read Firestore and logs. Locally, as whatever
-// GOOGLE_APPLICATION_CREDENTIALS points to.
+// GCP plumbing shared by the store, background tasks, AI and admin pages. The services run in
+// project clio-dx and every call goes out as the service's account there (metadata server):
+// nudge-runtime@clio-dx, or nudge-admin-runtime@clio-dx for the admin pages, which may only read
+// Firestore and logs. Locally, as whatever GOOGLE_APPLICATION_CREDENTIALS points to.
 import { GoogleAuth } from "google-auth-library";
 
+// Where the data lives: Firestore, queues, secrets, Vertex AI, logs
 export const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || "clio-nudge";
 export const REGION = process.env.NUDGE_REGION || "asia-northeast3";
+// Signs Cloud Tasks and Cloud Scheduler calls to /api/tasks/run and /api/cron/tick
 export const RUNTIME_SA = process.env.NUDGE_RUNTIME_SA || `nudge-runtime@${PROJECT_ID}.iam.gserviceaccount.com`;
 
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });

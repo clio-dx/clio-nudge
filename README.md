@@ -86,8 +86,8 @@ Slack에서 놓친 질문을 챙겨서 DM으로 알려주는 개인 Slack 에이
 
 | 구성 | 하는 일 |
 | --- | --- |
-| DX 공용 LB (`clio-dx`) | [nudge.dx.clio.co.kr](https://nudge.dx.clio.co.kr) → Cloud Run `nudge`(인터넷 NEG), `/admin` → Cloud Run `nudge-admin`(서버리스 NEG, IAP) |
-| Cloud Run `nudge` | Slack 이벤트·명령·버튼, OAuth, 예약 실행, 백그라운드 작업. Slack 요청은 서명을 확인한 뒤 바로 응답하고 실제 처리는 Cloud Tasks로 넘겨요 |
+| DX 공용 LB (`clio-dx`) | [nudge.dx.clio.co.kr](https://nudge.dx.clio.co.kr) → Cloud Run `nudge`, `/admin` → Cloud Run `nudge-admin`(IAP). 두 서비스 모두 `clio-dx`에서 돌고 LB로만 들어올 수 있어요(서버리스 NEG) |
+| Cloud Run `nudge` (`clio-dx`) | Slack 이벤트·명령·버튼, OAuth, 예약 실행, 백그라운드 작업. Slack 요청은 서명을 확인한 뒤 바로 응답하고 실제 처리는 Cloud Tasks로 넘겨요. 데이터·큐·시크릿·AI는 `clio-nudge` 것을 써요 |
 | Cloud Run `nudge-admin` (`clio-dx`) | 관리자 페이지 [nudge.dx.clio.co.kr/admin](https://nudge.dx.clio.co.kr/admin)(LB의 IAP 로그인, team-dx@·yoonchul@만, LB로만 들어올 수 있어요) — 사용자 수, 실행 기록, AI 호출 통계, 로그, 피드백 내보내기 |
 | Cloud Scheduler | 5분마다 `/api/cron/tick` 호출 → 알림 시각이 된 사용자·미리 확인할 사용자를 Cloud Tasks에 넣어요 |
 | Cloud Tasks | `nudge-slack`(Slack 응답), `nudge-work`(수집·알림, 동시 2개). 작업 이름으로 사용자·시각별 한 번만 실행해요 |
@@ -113,15 +113,15 @@ npm run lint
 ```
 
 - 처음 한 번의 IAM 설정은 [deploy/gcp/bootstrap.ps1](deploy/gcp/bootstrap.ps1), 그 밖의 리소스(Firestore·큐·시크릿·TTL)는 [deploy/gcp/infra.sh](deploy/gcp/infra.sh), 예약 실행은 [deploy/gcp/scheduler.sh](deploy/gcp/scheduler.sh), 도메인(DX 공용 LB)은 [deploy/gcp/lb.sh](deploy/gcp/lb.sh)에 있어요.
-- **알림 메일**([deploy/gcp/monitoring.sh](deploy/gcp/monitoring.sh)): 예약 실행(tick)이 20분 넘게 없거나, 10분 안에 오류 로그가 3건을 넘으면 yoonchul@clio.co.kr로 메일이 가요. 공개 서비스 기준이에요 — 관리자 서비스는 `clio-dx`에서 돌고 로그도 거기 남아요.
+- **알림 메일**([deploy/gcp/monitoring.sh](deploy/gcp/monitoring.sh)): 예약 실행(tick)이 20분 넘게 없거나, 10분 안에 오류 로그가 3건을 넘으면 yoonchul@clio.co.kr로 메일이 가요. 서비스가 도는 `clio-dx`에 있고, 두 서비스의 로그는 관리자 페이지에서 볼 수 있게 `clio-nudge`로도 복사돼요.
 - **백업**: Firestore PITR(지난 7일 안의 어느 시점으로든 되돌리기)이 켜져 있어요.
 - 배포는 `clio-nudge`와 `clio-dx` 두 프로젝트에 권한이 있는 본인 gcloud 계정으로 해요(배포용 서비스 계정 키는 이전이 끝난 뒤 지웠어요).
-- 환경변수(배포 스크립트가 설정): `NUDGE_ROLE`(public/admin), `NUDGE_TASKS=cloud`, `NUDGE_SECRETS=gcp`, `APP_URL`·`NEXT_PUBLIC_APP_URL`(사람이 보는 주소 `https://nudge.dx.clio.co.kr`), `NUDGE_SELF_URL`(Cloud Run 주소 — Cloud Tasks·Scheduler가 직접 호출), 선택 `AI_MODEL`(기본 `gemini-3.8-flash`), `AI_FALLBACK_MODEL`(기본 `gemini-2.5-flash`), `NUDGE_IAP_AUDIENCE`.
-- 내부 엔드포인트 `/api/cron/tick`, `/api/tasks/run`은 `nudge-runtime@` 서비스 계정의 Google ID 토큰만 받아요.
+- 환경변수(배포 스크립트가 설정): `NUDGE_ROLE`(public/admin), `NUDGE_TASKS=cloud`, `NUDGE_SECRETS=gcp`, `APP_URL`·`NEXT_PUBLIC_APP_URL`·`NUDGE_SELF_URL`(모두 `https://nudge.dx.clio.co.kr` — Slack·Cloud Tasks·Scheduler도 이 주소로 들어와요), `GOOGLE_CLOUD_PROJECT=clio-nudge`(데이터가 있는 프로젝트), 선택 `AI_MODEL`(기본 `gemini-3.8-flash`), `AI_FALLBACK_MODEL`(기본 `gemini-2.5-flash`), `NUDGE_IAP_AUDIENCE`.
+- 내부 엔드포인트 `/api/cron/tick`, `/api/tasks/run`은 `nudge-runtime@clio-nudge` 서비스 계정의 Google ID 토큰만 받아요(Cloud Tasks·Scheduler가 이 계정으로 서명해요).
 
 ### Slack 앱
 
-[`slack-app-manifest.json`](slack-app-manifest.json)을 Slack 앱 설정의 **App Manifest**에 붙여 넣고 Save하세요(스코프가 그대로면 다시 설치할 필요 없어요). 스코프를 바꾸면 사용자가 한 번 다시 설치(Add to Slack)해야 해요. 연결(OAuth)은 `nudge.dx.clio.co.kr`로 받고, 이벤트·버튼·`/nudge` 요청 URL은 LB를 거치지 않게 Cloud Run 주소 그대로 둬요.
+[`slack-app-manifest.json`](slack-app-manifest.json)을 Slack 앱 설정의 **App Manifest**에 붙여 넣고 Save하세요(스코프가 그대로면 다시 설치할 필요 없어요). 스코프를 바꾸면 사용자가 한 번 다시 설치(Add to Slack)해야 해요. 연결(OAuth), 이벤트·버튼·`/nudge` 요청 URL 모두 `nudge.dx.clio.co.kr`이에요.
 
 - User scopes: `channels:history`, `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`, `mpim:history`, `mpim:read`, `search:read`, `users:read`
 - Bot scopes: `chat:write`, `im:write`, `im:history`, `commands`

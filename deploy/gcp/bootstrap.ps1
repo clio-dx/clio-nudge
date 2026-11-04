@@ -4,11 +4,9 @@
 #
 #  - nudge-deployer: deploys tonight's migration. Its key lives outside the repo and is deleted
 #    after the migration (gcloud iam service-accounts keys delete ...).
-#  - nudge-runtime: what the Cloud Run services run as.
-#  - nudge (public, Slack calls it): the org blocks allUsers, so the invoker IAM check is turned
-#    off instead and the app verifies every request itself (Slack signatures, Google OIDC tokens).
-#  - nudge-admin (admin page): since 2026-11-03 it runs in project clio-dx behind the DX load
-#    balancer's IAP (deploy/gcp/lb.sh), so it isn't created here any more.
+#  - nudge-runtime: what the Cloud Run services ran as. Since 2026-11-04 both services run in
+#    project clio-dx behind the DX load balancer with their own accounts (deploy/gcp/lb.sh), so it
+#    only signs the Cloud Tasks and Cloud Scheduler calls now, and no service is created here.
 
 $P = "clio-nudge"
 $R = "asia-northeast3"
@@ -16,7 +14,6 @@ $DEPLOYER = "nudge-deployer@$P.iam.gserviceaccount.com"
 $RUNTIME = "nudge-runtime@$P.iam.gserviceaccount.com"
 $KEYDIR = Join-Path $env:USERPROFILE ".config\clio-nudge"
 $KEY = Join-Path $KEYDIR "nudge-deployer.json"
-$PLACEHOLDER = "us-docker.pkg.dev/cloudrun/container/hello"
 
 Write-Host "== service accounts"
 gcloud iam service-accounts create nudge-deployer --project $P --display-name "Nudge deployer (temporary key, delete after migration)"
@@ -33,9 +30,6 @@ foreach ($role in "roles/datastore.user", "roles/aiplatform.user", "roles/secret
 }
 # Cloud Tasks / Scheduler sign their OIDC tokens as the runtime account
 gcloud iam service-accounts add-iam-policy-binding $RUNTIME --project $P --member "serviceAccount:$RUNTIME" --role roles/iam.serviceAccountUser --format none
-
-Write-Host "== placeholder services (tonight's deploys replace the image, settings stay)"
-gcloud run deploy nudge --project $P --region $R --image $PLACEHOLDER --service-account $RUNTIME --no-invoker-iam-check --quiet
 
 Write-Host "== deployer key + its own gcloud configuration (your default login is untouched)"
 New-Item -ItemType Directory -Force $KEYDIR | Out-Null

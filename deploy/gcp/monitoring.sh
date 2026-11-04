@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Email alerts for Nudge (Cloud Monitoring). Safe to re-run: existing pieces are kept.
+# Email alerts for Nudge (Cloud Monitoring), in project clio-dx where both services run and log
+# (since 2026-11-04; lb.sh). Safe to re-run: existing pieces are kept.
 #   deploy/gcp/monitoring.sh [email]      (default yoonchul@clio.co.kr)
 #  - "Nudge 예약 실행 멈춤": no scheduler tick logged for 20 minutes
-#  - "Nudge 오류": more than 3 ERROR log lines (app errors, 5xx responses) within 10 minutes from
-#    the public service (nudge-admin runs in clio-dx and logs there)
+#  - "Nudge 오류": more than 3 ERROR log lines (app errors, 5xx responses) within 10 minutes
 set -euo pipefail
-P=clio-nudge
+P=clio-dx
 EMAIL=${1:-yoonchul@clio.co.kr}
 DIR=$(mktemp -d)
 
@@ -23,8 +23,8 @@ metric() { # name, description, filter
 }
 metric nudge_ticks "Nudge scheduler ticks (one per 5 minutes)" \
   'resource.type="cloud_run_revision" AND resource.labels.service_name="nudge" AND textPayload=~"^tick \{"'
-metric nudge_errors "ERROR log lines from the public Nudge service" \
-  'resource.type="cloud_run_revision" AND resource.labels.service_name="nudge" AND severity>=ERROR'
+metric nudge_errors "ERROR log lines from the Nudge services" \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name=("nudge" OR "nudge-admin") AND severity>=ERROR'
 
 cat > "$DIR/ticks.json" <<EOF
 {
