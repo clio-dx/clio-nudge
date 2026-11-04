@@ -113,9 +113,9 @@ npm run lint
 ```
 
 - 처음 한 번의 IAM 설정은 [deploy/gcp/bootstrap.ps1](deploy/gcp/bootstrap.ps1), 그 밖의 리소스(Firestore·큐·시크릿·TTL)는 [deploy/gcp/infra.sh](deploy/gcp/infra.sh), 예약 실행은 [deploy/gcp/scheduler.sh](deploy/gcp/scheduler.sh), 도메인(DX 공용 LB)은 [deploy/gcp/lb.sh](deploy/gcp/lb.sh)에 있어요.
-- **알림 메일**([deploy/gcp/monitoring.sh](deploy/gcp/monitoring.sh)): 예약 실행(tick)이 20분 넘게 없거나, 10분 안에 오류 로그가 3건을 넘으면 yoonchul@clio.co.kr로 메일이 가요.
+- **알림 메일**([deploy/gcp/monitoring.sh](deploy/gcp/monitoring.sh)): 예약 실행(tick)이 20분 넘게 없거나, 10분 안에 오류 로그가 3건을 넘으면 yoonchul@clio.co.kr로 메일이 가요. 공개 서비스 기준이에요 — 관리자 서비스는 `clio-dx`에서 돌고 로그도 거기 남아요.
 - **백업**: Firestore PITR(지난 7일 안의 어느 시점으로든 되돌리기)이 켜져 있어요.
-- 배포용 서비스 계정 키는 이전이 끝난 뒤 지웠어요. 다시 배포하려면 키를 새로 만들거나 본인 계정으로 `deploy.sh`의 gcloud 명령을 실행하세요.
+- 배포는 `clio-nudge`와 `clio-dx` 두 프로젝트에 권한이 있는 본인 gcloud 계정으로 해요(배포용 서비스 계정 키는 이전이 끝난 뒤 지웠어요).
 - 환경변수(배포 스크립트가 설정): `NUDGE_ROLE`(public/admin), `NUDGE_TASKS=cloud`, `NUDGE_SECRETS=gcp`, `APP_URL`·`NEXT_PUBLIC_APP_URL`(사람이 보는 주소 `https://nudge.dx.clio.co.kr`), `NUDGE_SELF_URL`(Cloud Run 주소 — Cloud Tasks·Scheduler가 직접 호출), 선택 `AI_MODEL`(기본 `gemini-3.8-flash`), `AI_FALLBACK_MODEL`(기본 `gemini-2.5-flash`), `NUDGE_IAP_AUDIENCE`.
 - 내부 엔드포인트 `/api/cron/tick`, `/api/tasks/run`은 `nudge-runtime@` 서비스 계정의 Google ID 토큰만 받아요.
 

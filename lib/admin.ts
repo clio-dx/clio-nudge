@@ -155,7 +155,8 @@ export async function recentLogs({
   const since = new Date(Date.now() - hours * HOUR).toISOString();
   const parts = [
     'resource.type="cloud_run_revision"',
-    'resource.labels.service_name=("nudge" OR "nudge-admin")',
+    // The public service; nudge-admin runs in clio-dx and logs there
+    'resource.labels.service_name="nudge"',
     `timestamp>="${since}"`,
     `severity>=${severity}`,
     // Request logs repeat what the app logs; keep the app's own lines

@@ -1,5 +1,6 @@
 // GCP plumbing shared by the store, background tasks, AI and admin pages. On Cloud Run every call
-// runs as the nudge-runtime service account (metadata server); locally, as whatever
+// runs as the service's account (metadata server): nudge-runtime, or for the admin pages
+// nudge-admin-runtime@clio-dx, which may only read Firestore and logs. Locally, as whatever
 // GOOGLE_APPLICATION_CREDENTIALS points to.
 import { GoogleAuth } from "google-auth-library";
 

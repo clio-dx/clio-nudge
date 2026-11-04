@@ -104,6 +104,6 @@ EOF
 fi
 gcloud compute url-maps describe dx-lb-urlmap --global --project $DX \
   --format="yaml(pathMatchers.filter(name:nudge-matcher))"
-# The app accepts IAP's signed header only for this audience: IAP_AUDIENCE in deploy.sh
+# The app accepts IAP's signed header only for this audience (deploy.sh looks it up)
 echo "audience: /projects/$DX_NUM/global/backendServices/$(
   gcloud compute backend-services describe $ADMIN --global --project $DX --format='value(id)')"

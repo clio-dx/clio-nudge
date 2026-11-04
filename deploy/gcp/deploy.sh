@@ -19,11 +19,16 @@ RUNTIME=nudge-runtime@$P.iam.gserviceaccount.com
 # Admin pages: in clio-dx next to the load balancer, reading clio-nudge's Firestore and logs (lb.sh)
 ADMIN_P=clio-dx
 ADMIN_RUNTIME=nudge-admin-runtime@$ADMIN_P.iam.gserviceaccount.com
-# IAP on the load balancer's nudge-admin-backend signs admin requests for this audience
-IAP_AUDIENCE=/projects/191157507185/global/backendServices/4623937578872353016
 TAG=$(git rev-parse --short HEAD)$( [ -n "$(git status --porcelain)" ] && echo "-dirty$(date +%H%M%S)" || true )
 IMG=$R-docker.pkg.dev/$P/nudge/app:$TAG
 WHICH=${1:-all}
+
+if [ "$WHICH" = all ] || [ "$WHICH" = admin ]; then
+  # IAP on the load balancer's nudge-admin-backend signs admin requests for this audience. Looked
+  # up (before anything is built or deployed) because the id changes if lb.sh recreates it.
+  IAP_AUDIENCE=/projects/191157507185/global/backendServices/$(gcloud compute backend-services describe \
+    nudge-admin-backend --global --project $ADMIN_P --format="value(id)")
+fi
 
 gcloud auth configure-docker $R-docker.pkg.dev --quiet >/dev/null
 docker build --build-arg NEXT_PUBLIC_APP_URL=$URL -t "$IMG" .
