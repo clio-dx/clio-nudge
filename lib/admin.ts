@@ -166,7 +166,14 @@ export async function recentLogs({
   const res = await gcpFetch<{
     entries?: { timestamp: string; severity?: string; textPayload?: string; jsonPayload?: unknown; resource?: { labels?: { service_name?: string } } }[];
   }>("https://logging.googleapis.com/v2/entries:list", {
-    body: { resourceNames: [`projects/${PROJECT_ID}`], filter: parts.join(" AND "), orderBy: "timestamp desc", pageSize: limit },
+    // The bucket's view, not the project: a project query leaves out lines copied in from clio-dx.
+    // _Default (all but data access audit logs) is the view logging.viewer may read.
+    body: {
+      resourceNames: [`projects/${PROJECT_ID}/locations/global/buckets/_Default/views/_Default`],
+      filter: parts.join(" AND "),
+      orderBy: "timestamp desc",
+      pageSize: limit,
+    },
   });
   return (res.entries ?? []).map((e) => ({
     at: e.timestamp,
