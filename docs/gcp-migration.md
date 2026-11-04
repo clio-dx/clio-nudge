@@ -54,7 +54,8 @@ Vercel Hobby + Upstash Redis + Vercel AI Gateway(무료, 분당 5회) → GCP `c
 
 1. `gcloud scheduler jobs pause nudge-tick` 하고 `nudge-work` 큐 비우기(`gcloud tasks queues purge nudge-work`) — 두 곳에서 알림이 가지 않게
 2. 지난 2시간 안에 GCP가 보낸 알림이 있으면 Vercel이 같은 슬롯을 다시 보낼 수 있으니(따라잡기 2시간), 그 뒤에 진행
-3. Slack 매니페스트 URL을 `https://clio-nudge.vercel.app/...`로 되돌리고 `vercel-state {action: "unfreeze"}`
+3. Slack 매니페스트 URL을 `https://clio-nudge.vercel.app/...`로 되돌리고 Vercel 동결 해제. 11-04부터 서비스가 `clio-dx`에서 `nudge-runtime@clio-dx`로 서명해서 `vercel-state` 작업은 거절됨(동결된 Vercel은 `nudge-runtime@clio-nudge` 토큰만 받음). `clio-nudge` 소유자 계정으로 작업을 직접 만들어 그 계정 서명으로 보냄:
+   `gcloud tasks create-http-task --project clio-nudge --location asia-northeast3 --queue nudge-slack --url https://clio-nudge.vercel.app/api/admin/export --method POST --header Content-Type:application/json --body-content '{"action":"unfreeze"}' --oidc-service-account-email nudge-runtime@clio-nudge.iam.gserviceaccount.com --oidc-token-audience https://clio-nudge.vercel.app/api/admin/export`
 4. GCP에 있는 동안 새로 연결한 사람은 Vercel에 토큰이 없으니 다시 연결해야 함
 
 ## 이후 운영 (10-19)
@@ -83,6 +84,9 @@ DX팀 공용 LB(`clio-dx` 프로젝트의 classic Application Load Balancer, IP 
 - 앱은 IAP 서명 헤더를 `nudge-admin-backend`의 audience로만 받고, audience가 비어 있으면 아무도 못 들어옴. admin 페이지의 JS·CSS(`/_next/static`)는 공개 서비스에서 받으니 두 서비스는 항상 같은 빌드로 배포(`deploy.sh` 기본값)
 - 로그·알림: 서비스 로그는 `clio-dx`에 쌓이고, 로그 싱크 `nudge-logs`가 `clio-nudge`의 `_Default` 버킷으로 복사함(관리자 페이지 로그 화면용). 메일 알림 2개(`monitoring.sh`)는 `clio-dx`에 있음
 - 비용: 이전 전과 같음 — 같은 결제 계정(DX팀 통합 결제계정)이고 Cloud Run 사용량이 `clio-nudge`에서 `clio-dx`로 옮겨 찍힐 뿐. LB 전달 규칙은 새로 만들지 않음
-- 예전 `clio-nudge`의 `nudge`·`nudge-admin`(run.app 주소)은 삭제함
+- 예전 `clio-nudge`의 `nudge`·`nudge-admin`(run.app 주소)은 삭제함. 그래서 10-16~11-03에 보낸 DM 속 run.app 링크(연결하기·사용법 보기)와 동결된 Vercel의 Add to Slack은 404 — 사용자가 괜찮다고 함
 
-롤백: `nudge-matcher`의 기본 백엔드만 바꾸면 되므로, `clio-nudge`에 `nudge`를 다시 배포하고(인터넷 NEG 방식, git 기록의 `lb.sh` 32ce8f2 참고) URL map을 그쪽으로 돌림. `nudge.dx.clio.co.kr` 호스트 규칙은 지우지 말 것 — 지우면 이 LB의 기본 백엔드(pricefcst)로 가서, 이미 보낸 DM 속 링크와 Slack 요청이 엉뚱한 서비스로 감.
+롤백(서비스를 다시 `clio-nudge`로): `nudge.dx.clio.co.kr` 호스트 규칙은 지우지 말 것 — 지우면 이 LB의 기본 백엔드(pricefcst)로 가서, DM 속 링크와 Slack 요청이 엉뚱한 서비스로 감.
+1. `clio-nudge`에 `nudge`를 `--service-account nudge-runtime@clio-nudge.iam.gserviceaccount.com --no-invoker-iam-check --ingress all`로 배포(환경변수는 `deploy.sh`와 같게, `NUDGE_SELF_URL`도 도메인 그대로 — 예약 실행·작업 토큰의 audience가 맞음). `nudge-runtime@clio-nudge`의 Firestore·시크릿·AI·Tasks 권한은 그대로 있음
+2. git 기록(32ce8f2)의 `lb.sh`대로 인터넷 NEG `nudge-neg` + `nudge-backend`(HTTPS, `Host:` 헤더, 타임아웃 3600초)를 다시 만들고 `nudge-matcher`의 기본 백엔드를 그쪽으로 돌림(export → validate → import)
+3. 알림을 `clio-nudge`에 다시 만들고(`monitoring.sh`의 `P=clio-nudge`) `clio-dx` 것은 지움 — 로그가 `clio-nudge`에 쌓이니 그대로 두면 `clio-dx`의 "예약 실행 멈춤"이 20분 뒤 메일을 보냄

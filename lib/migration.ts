@@ -1,5 +1,6 @@
-// One-off move from the Vercel deployment (Upstash) to GCP (docs/gcp-migration.md). Runs as the
-// nudge-runtime service account: the frozen Vercel side only answers that identity.
+// One-off move from the Vercel deployment (Upstash) to GCP (docs/gcp-migration.md). The frozen
+// Vercel side only answers nudge-runtime@clio-nudge; since the services run in clio-dx these jobs
+// sign as nudge-runtime@clio-dx and are refused (the rollback steps in the doc go around them).
 import { idTokenFor, putSecret } from "@/lib/gcp";
 import { addFollowUp, firstTime, getUserFollowUps, kindOf, markSeen, removeFollowUp, type FollowUp } from "@/lib/store";
 import { backend, clean } from "@/lib/store/backend";

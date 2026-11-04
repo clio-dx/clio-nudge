@@ -8,6 +8,10 @@ set -euo pipefail
 P=clio-dx
 EMAIL=${1:-yoonchul@clio.co.kr}
 DIR=$(mktemp -d)
+# Kept in bash: read back through python on Windows they come out as cp949, the lookup below
+# never matches, and every run adds another copy of each policy
+TICKS="Nudge 예약 실행 멈춤"
+ERRORS="Nudge 오류"
 
 channel=$(gcloud beta monitoring channels list --project $P --filter="labels.email_address=\"$EMAIL\"" --format="value(name)" | head -1)
 if [ -z "$channel" ]; then
@@ -28,7 +32,7 @@ metric nudge_errors "ERROR log lines from the Nudge services" \
 
 cat > "$DIR/ticks.json" <<EOF
 {
-  "displayName": "Nudge 예약 실행 멈춤",
+  "displayName": "$TICKS",
   "documentation": {
     "content": "20분 넘게 Nudge 예약 실행(tick)이 없어요. 알림이 나가지 않을 수 있어요.\n확인: gcloud scheduler jobs describe nudge-tick --location asia-northeast3 --project clio-nudge, 관리자 페이지 최근 실행.",
     "mimeType": "text/markdown"
@@ -48,7 +52,7 @@ cat > "$DIR/ticks.json" <<EOF
 EOF
 cat > "$DIR/errors.json" <<EOF
 {
-  "displayName": "Nudge 오류",
+  "displayName": "$ERRORS",
   "documentation": {
     "content": "10분 동안 Nudge 오류 로그가 3건을 넘었어요. 관리자 페이지 → 로그(ERROR 이상)에서 확인하세요.",
     "mimeType": "text/markdown"
@@ -69,12 +73,13 @@ cat > "$DIR/errors.json" <<EOF
 }
 EOF
 
-for f in ticks errors; do
-  name=$(python -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8'))['displayName'])" "$DIR/$f.json")
-  if [ -z "$(gcloud alpha monitoring policies list --project $P --filter="displayName=\"$name\"" --format="value(name)")" ]; then
-    gcloud alpha monitoring policies create --project $P --policy-from-file="$DIR/$f.json" --format="value(name)"
+policy() { # file, display name
+  if [ -z "$(gcloud alpha monitoring policies list --project $P --filter="displayName=\"$2\"" --format="value(name)")" ]; then
+    gcloud alpha monitoring policies create --project $P --policy-from-file="$1" --format="value(name)"
   else
-    echo "exists: $name"
+    echo "exists: $2"
   fi
-done
+}
+policy "$DIR/ticks.json" "$TICKS"
+policy "$DIR/errors.json" "$ERRORS"
 rm -rf "$DIR"
